@@ -32,3 +32,21 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      # Authenticate/setup gcloud
+      - uses: "google-github-actions/auth@v0"
+        id: "auth"
+        with:
+          credentials_json: "${{ secrets.GCP_CREDENTIALS }}"
+
+#      - name: "Set up Cloud SDK"
+#        uses: "google-github-actions/setup-gcloud@v0"
+
+      - name: "Set up docker auth"
+        run: gcloud auth configure-docker
+
+      # Build and push docker image
+      - name: "Build Latest Image and push"
+        run: |
+          docker build . -f docker/Dockerfile -t gcr.io/eth-cloud-mb/${{ github.repository }}:latest
+          docker push gcr.io/eth-cloud-mb/${{ github.repository }}:latest
