@@ -22,7 +22,7 @@ jobs:
 
       - name: Build and Push Docker Image
         run: |
-          IMAGE_NAME=gcr.io/eth-cloud-mb/${{ github.repository }}:latest
+          IMAGE_NAME=gcr.io/eth-cloud-mb/arak:latest
           DOCKERFILE_PATH=docker/Dockerfile
 
           docker build -t $IMAGE_NAME -f $DOCKERFILE_PATH .
