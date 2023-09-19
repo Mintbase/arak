@@ -32,19 +32,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v0
-        with:
-          project_id: eth-cloud-mb
-          service_account_key: ${{ secrets.GCP_CREDENTIALS }}
-          export_default_credentials: true
-
-      - name: Build and Push Docker Image
-        run: |
-          IMAGE_NAME=gcr.io/eth-cloud-mb/${{ github.repository }}:latest
-          DOCKERFILE_PATH=docker/Dockerfile
-
-          # Build and push the Docker image
-          docker build -t $IMAGE_NAME -f $DOCKERFILE_PATH .
-          docker push $IMAGE_NAME
