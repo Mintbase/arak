@@ -11,14 +11,12 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
 
       - name: Set up Google Cloud CLI
-        uses: google-github-actions/setup-gcloud@v0
+        uses: google-github-actions/auth@v1
         with:
-          project_id: eth-cloud-mb
-          service_account_key: ${{ secrets.GCP_CREDENTIALS }}
-          export_default_credentials: true
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
 
       - name: Build and Push Docker Image
         run: |
