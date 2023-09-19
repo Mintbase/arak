@@ -1,7 +1,7 @@
 name: deploy
 on:
   push:
-    branches: [main]
+    branches: [main,google-push]
     tags: [v*]
 
 jobs:
