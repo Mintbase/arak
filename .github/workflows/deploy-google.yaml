@@ -2,7 +2,7 @@ name: Deploy to Google Cloud
 
 on:
   push:
-    branches: [main, push-google]
+    branches: [main]
     tags: [v*]
 
 jobs:

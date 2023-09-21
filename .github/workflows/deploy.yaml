@@ -14,21 +14,21 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-#      - uses: docker/login-action@v1
-#        with:
-#          registry: ghcr.io
-#          username: ${{ github.actor }}
-#          password: ${{ secrets.GITHUB_TOKEN }}
-#
-#      - uses: docker/metadata-action@v3
-#        id: meta
-#        with:
-#          images: ghcr.io/${{ github.repository }}
-#
-#      - uses: docker/build-push-action@v2
-#        with:
-#          context: .
-#          file: docker/Dockerfile
-#          push: true
-#          tags: ${{ steps.meta.outputs.tags }}
-#          labels: ${{ steps.meta.outputs.labels }}
+      - uses: docker/login-action@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v3
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      - uses: docker/build-push-action@v2
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
