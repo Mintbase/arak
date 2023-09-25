@@ -21,7 +21,6 @@ struct Arguments {
 async fn main() -> Result<()> {
     let args = Arguments::parse();
     let subscriber = tracing_subscriber::FmtSubscriber::builder()
-        .with_env_filter("info,arak=debug")
         .with_ansi(false)
         .finish();
 
