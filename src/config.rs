@@ -71,8 +71,8 @@ impl Config {
         node_url: Option<String>,
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
-        let toml_string = manual_override(fs::read_to_string(path)?, node_url, db_url)?;
-        let config: Config = toml::from_str(&toml_string)?;
+        let toml = manual_override(fs::read_to_string(path)?, node_url, db_url)?;
+        let config: Config = toml::from_str(&toml.to_string())?;
 
         let root = fs::canonicalize(path)?
             .parent()
@@ -86,7 +86,7 @@ fn manual_override(
     toml_string: String,
     node_url: Option<String>,
     db_url: Option<String>,
-) -> Result<String> {
+) -> Result<Table> {
     let mut toml_values = toml_string.parse::<Table>()?;
     // Manual overrides from env vars.
     if let Some(ethrpc) = node_url {
@@ -105,7 +105,7 @@ fn manual_override(
         };
         toml_values.insert("database".to_string(), Value::Table(db_type));
     }
-    Ok(toml_values.to_string())
+    Ok(toml_values)
 }
 
 impl Debug for Config {
@@ -197,5 +197,77 @@ impl Event {
             topics: ArrayVec::new(),
             signature,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manual_override() {
+        // Sample contains both ethrpc and database.sqlite config
+        let sample_toml = r#"
+        ethrpc = "old rpc"
+        [database.postgres]
+        connection = "old db"
+        "#
+        .to_string();
+
+        // Manual (Env) Values
+        let node_url = Some("new rpc".to_string());
+        let db_url = Some("new db".to_string());
+
+        // override both
+        let new_toml =
+            manual_override(sample_toml.clone(), node_url.clone(), db_url.clone()).unwrap();
+        assert_eq!(
+            new_toml,
+            r#"
+            ethrpc = "new rpc"
+            [database.postgres]
+            connection = "new db"
+            "#
+            .parse::<Table>()
+            .unwrap()
+        );
+
+        // only node_url
+        let new_toml = manual_override(sample_toml.clone(), node_url.clone(), None).unwrap();
+        assert_eq!(
+            new_toml,
+            r#"
+            ethrpc = "new rpc"
+            [database.postgres]
+            connection = "old db"
+            "#
+            .parse::<Table>()
+            .unwrap()
+        );
+
+        // only db_url
+        let new_toml = manual_override(sample_toml.clone(), None, db_url.clone()).unwrap();
+        assert_eq!(
+            new_toml,
+            r#"
+            ethrpc = "old rpc"
+            [database.postgres]
+            connection = "new db"
+            "#
+            .parse::<Table>()
+            .unwrap()
+        );
+
+        // toml without node or db provided
+        assert_eq!(
+            manual_override("".to_string(), node_url, db_url).unwrap(),
+            r#"
+            ethrpc = "new rpc"
+            [database.postgres]
+            connection = "new db"
+            "#
+            .parse::<Table>()
+            .unwrap()
+        );
     }
 }
