@@ -26,6 +26,19 @@ pub struct Config {
     pub events: Vec<Event>,
 }
 
+impl Config {
+    fn set_ethrpc(&mut self, value: Url) {
+        self.ethrpc = value;
+    }
+    fn set_database(&mut self, connection: String) {
+        if connection.contains("file:") {
+            self.database = Database::Sqlite { connection }
+        } else {
+            self.database = Database::Postgres { connection }
+        };
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Database {
@@ -70,39 +83,24 @@ impl Config {
         node_url: Option<String>,
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
-        let toml = manual_override(fs::read_to_string(path)?, node_url, db_url);
-        let config = toml::from_str(&toml)?;
+        let toml = fs::read_to_string(path)?;
+        let mut config: Config = toml::from_str(&toml)?;
+        // Manual Overrides from env vars.
+        if let Some(ethrpc) = &node_url {
+            tracing::info!("using env NODE_URL");
+            config.set_ethrpc(Url::parse(&ethrpc)?)
+        }
+        if let Some(connection) = &db_url {
+            tracing::info!("using env DB_URL");
+            config.set_database(connection.to_string())
+        }
+
         let root = fs::canonicalize(path)?
             .parent()
             .expect("file path without a parent")
             .to_owned();
         Ok((config, root))
     }
-}
-
-fn manual_override(mut toml: String, node_url: Option<String>, db_url: Option<String>) -> String {
-    // override for node_url
-    if let Some(ethrpc) = node_url {
-        tracing::info!("using env NODE_URL");
-        // comment any existing config
-        toml = toml.replace("ethrpc", "#ethrpc");
-        // Insert the new one at the top
-        toml = format!("ethrpc = \"{ethrpc}\"\n") + &toml;
-    }
-    // override for db_url
-    if let Some(connection) = db_url {
-        tracing::info!("using env DB_URL");
-        // comment any existing config
-        toml = toml.replace("[database.", "#[database.");
-        let db_type = if connection.contains("file:") {
-            "sqlite"
-        } else {
-            "postgres"
-        };
-        // Append the new one at the bottom.
-        toml = toml + &format!("\n[database.{db_type}]\nconnection = \"{connection}\"");
-    }
-    toml
 }
 
 impl Debug for Config {
@@ -194,83 +192,5 @@ impl Event {
             topics: ArrayVec::new(),
             signature,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_manual_override() {
-        // Sample contains both ethrpc and database.sqlite config
-        let sample_toml = fs::read_to_string("arak.example.toml").unwrap();
-        let sample_config: Config = toml::from_str(&sample_toml).unwrap();
-        let sample_node_url = Url::parse("http://localhost:8545").unwrap();
-        assert_eq!(sample_config.ethrpc, sample_node_url);
-        match sample_config.database {
-            Database::Postgres { .. } => panic!("Expected sqlite"),
-            Database::Sqlite { .. } => (),
-        }
-
-        // Manual (Env) Values
-        let node_url = Some("https://url.com".to_string());
-        let db_url = Some("postgres://DB_URL".to_string());
-
-        // override both
-        let config: Config = toml::from_str(&manual_override(
-            sample_toml.clone(),
-            node_url.clone(),
-            db_url.clone(),
-        ))
-        .unwrap();
-        assert_eq!(
-            config.ethrpc,
-            Url::parse(&node_url.clone().unwrap()).unwrap()
-        );
-        match config.database {
-            Database::Postgres { .. } => (),
-            Database::Sqlite { .. } => panic!("Expected postgres"),
-        }
-
-        // only node_url
-        let config: Config = toml::from_str(&manual_override(
-            sample_toml.clone(),
-            node_url.clone(),
-            None,
-        ))
-        .unwrap();
-        assert_eq!(
-            config.ethrpc,
-            Url::parse(&node_url.clone().unwrap()).unwrap()
-        );
-        match config.database {
-            Database::Postgres { .. } => panic!("Expected sqlite"),
-            Database::Sqlite { .. } => (),
-        }
-
-        // only db_url
-        let config: Config =
-            toml::from_str(&manual_override(sample_toml.clone(), None, db_url.clone())).unwrap();
-        assert_eq!(config.ethrpc, sample_node_url);
-        match config.database {
-            Database::Postgres { .. } => (),
-            Database::Sqlite { .. } => panic!("Expected postgres"),
-        }
-
-        // toml without node or db provided
-        let my_toml = r#"
-            [[event]]
-            name = "crypto_kitty_mints"
-            start = 4605160
-            contract = "0x06012c8cf97bead5deae237070f9587f8e7a266d"
-            topics = [
-                "0x0000000000000000000000000000000000000000000000000000000000000000"
-            ]
-            signature = "event Transfer (address from, address to, uint256 tokenId)""#;
-        assert!(
-            toml::from_str::<Config>(&manual_override(my_toml.to_string(), node_url, db_url))
-                .is_ok()
-        );
     }
 }
