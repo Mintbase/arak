@@ -71,26 +71,8 @@ impl Config {
         node_url: Option<String>,
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
-        let toml_string = fs::read_to_string(path)?;
-        let mut toml_values = toml_string.parse::<Table>()?;
-        // Manual overrides from env vars.
-        if let Some(ethrpc) = node_url {
-            tracing::info!("using env NODE_URL");
-            toml_values.insert("ethrpc".to_string(), Value::String(ethrpc));
-        }
-        if let Some(connection) = db_url {
-            tracing::info!("using env DB_URL");
-            let mut db_data = Table::new();
-            let db_type = if connection.contains("file:") {
-                "database.sqlite"
-            } else {
-                "database.postgres"
-            };
-            db_data.insert("connection".to_string(), Value::String(connection));
-
-            toml_values.insert(db_type.parse()?, Value::Table(db_data));
-        }
-        let config: Config = toml::from_str(&toml_values.to_string())?;
+        let toml_string = manual_override(fs::read_to_string(path)?, node_url, db_url)?;
+        let config: Config = toml::from_str(&toml_string)?;
 
         let root = fs::canonicalize(path)?
             .parent()
@@ -98,6 +80,32 @@ impl Config {
             .to_owned();
         Ok((config, root))
     }
+}
+
+fn manual_override(
+    toml_string: String,
+    node_url: Option<String>,
+    db_url: Option<String>,
+) -> Result<String> {
+    let mut toml_values = toml_string.parse::<Table>()?;
+    // Manual overrides from env vars.
+    if let Some(ethrpc) = node_url {
+        tracing::info!("using env NODE_URL");
+        toml_values.insert("ethrpc".to_string(), Value::String(ethrpc));
+    }
+    if let Some(connection) = db_url {
+        tracing::info!("using env DB_URL");
+        let mut db_data = Table::new();
+        db_data.insert("connection".to_string(), Value::String(connection.clone()));
+        let mut db_type = Table::new();
+        if connection.contains("file:") {
+            db_type.insert("sqlite".to_string(), Value::Table(db_data))
+        } else {
+            db_type.insert("postgres".to_string(), Value::Table(db_data))
+        };
+        toml_values.insert("database".to_string(), Value::Table(db_type));
+    }
+    Ok(toml_values.to_string())
 }
 
 impl Debug for Config {
