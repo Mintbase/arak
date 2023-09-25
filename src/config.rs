@@ -1,3 +1,4 @@
+use toml::{Table, Value};
 use {
     anyhow::Result,
     ethrpc::types::{ArrayVec, LogFilterValue},
@@ -24,19 +25,6 @@ pub struct Config {
     pub indexer: Indexer,
     #[serde(rename = "event")]
     pub events: Vec<Event>,
-}
-
-impl Config {
-    fn set_ethrpc(&mut self, value: Url) {
-        self.ethrpc = value;
-    }
-    fn set_database(&mut self, connection: String) {
-        if connection.contains("file:") {
-            self.database = Database::Sqlite { connection }
-        } else {
-            self.database = Database::Postgres { connection }
-        };
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -83,17 +71,26 @@ impl Config {
         node_url: Option<String>,
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
-        let toml = fs::read_to_string(path)?;
-        let mut config: Config = toml::from_str(&toml)?;
-        // Manual Overrides from env vars.
-        if let Some(ethrpc) = &node_url {
+        let toml_string = fs::read_to_string(path)?;
+        let mut toml_values = toml_string.parse::<Table>()?;
+        // Manual overrides from env vars.
+        if let Some(ethrpc) = node_url {
             tracing::info!("using env NODE_URL");
-            config.set_ethrpc(Url::parse(&ethrpc)?)
+            toml_values.insert("ethrpc".to_string(), Value::String(ethrpc));
         }
-        if let Some(connection) = &db_url {
+        if let Some(connection) = db_url {
             tracing::info!("using env DB_URL");
-            config.set_database(connection.to_string())
+            let mut db_data = Table::new();
+            let db_type = if connection.contains("file:") {
+                "database.sqlite"
+            } else {
+                "database.postgres"
+            };
+            db_data.insert("connection".to_string(), Value::String(connection));
+
+            toml_values.insert(db_type.parse()?, Value::Table(db_data));
         }
+        let config: Config = toml::from_str(&toml_values.to_string())?;
 
         let root = fs::canonicalize(path)?
             .parent()
