@@ -8,7 +8,7 @@ data:
 
     [indexer]
     page-size = 1000
-    poll-interval = 5
+    poll-interval = 10
 
     ## ERC721: https://eips.ethereum.org/EIPS/eip-721#specification
     [[event]]
