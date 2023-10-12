@@ -274,7 +274,7 @@ impl SqliteInner {
                     SqlType::Text => "TEXT",
                     SqlType::Blob => "BLOB",
                 };
-                write!(&mut sql, " {type_}, ").unwrap();
+                write!(&mut sql, " {type_} NOT NULL, ").unwrap();
             }
             let primary_key = if is_array {
                 PRIMARY_KEY_ARRAY
