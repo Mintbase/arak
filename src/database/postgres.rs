@@ -499,7 +499,7 @@ mod tests {
     use super::*;
 
     fn local_postgres_url() -> String {
-        "postgresql://arak@localhost".to_string()
+        "postgresql://postgres@localhost".to_string()
     }
 
     async fn clear_database() {
