@@ -286,22 +286,25 @@ fn database_logs(
         );
     }
 
-    logs.into_iter().filter_map(move |log| {
-        let fields = match adapter.decode(&log.topics, &log.data) {
-            Ok(fields) => fields,
-            Err(err) => {
-                tracing::warn!(?err, ?log, "failed to decode log");
-                return None;
-            }
-        };
+    logs.into_iter()
+        // Exclude invalid topic lengths
+        .filter(|log| log.topics.len() == adapter.num_topics())
+        .filter_map(move |log| {
+            let fields = match adapter.decode(&log.topics, &log.data) {
+                Ok(fields) => fields,
+                Err(err) => {
+                    tracing::warn!(?err, ?log, "failed to decode log");
+                    return None;
+                }
+            };
 
-        Some(database::Log {
-            event: adapter.name(),
-            block_number: log.block_number.as_u64(),
-            log_index: log.log_index.as_u64(),
-            transaction_index: log.transaction_index.as_u64(),
-            address: log.address,
-            fields,
+            Some(database::Log {
+                event: adapter.name(),
+                block_number: log.block_number.as_u64(),
+                log_index: log.log_index.as_u64(),
+                transaction_index: log.transaction_index.as_u64(),
+                address: log.address,
+                fields,
+            })
         })
-    })
 }
