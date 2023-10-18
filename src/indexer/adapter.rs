@@ -3,6 +3,7 @@
 //! - Generate Ethereum RPC log filters for the specified configuration
 //! - Decode Ethereum log topics and data into Solidity values
 
+use anyhow::anyhow;
 use {
     crate::config,
     anyhow::{Context, Result},
@@ -22,6 +23,7 @@ pub struct Adapter {
     signature: EventDescriptor,
     start: u64,
     filter: LogFilter,
+    num_topics: usize,
     encoder: EventEncoder,
 }
 
@@ -47,11 +49,13 @@ impl Adapter {
             blocks: LogBlocks::default(),
         };
         let encoder = EventEncoder::new(&config.signature)?;
-
+        // EventSignature(topic0) + # Indexed Events
+        let num_topics = 1 + config.signature.inputs.iter().filter(|x| x.indexed).count();
         Ok(Self {
             name: config.name,
             signature: config.signature,
             start: config.start,
+            num_topics,
             filter,
             encoder,
         })
@@ -77,6 +81,10 @@ impl Adapter {
         self.start
     }
 
+    pub fn num_topics(&self) -> usize {
+        self.num_topics
+    }
+
     /// Returns a log filter for the specified blocks.
     pub fn filter(&self, blocks: LogBlocks) -> LogFilter {
         LogFilter {
@@ -87,6 +95,13 @@ impl Adapter {
 
     /// Decodes Ethereum log topics and data into a database event for storing.
     pub fn decode(&self, topics: &[Digest], data: &[u8]) -> Result<Vec<Value>> {
+        if topics.len() != self.num_topics() {
+            return Err(anyhow!(
+                "attempt to decode log with invalid topic length - got {}, expected {}",
+                topics.len(),
+                self.num_topics()
+            ));
+        }
         let fields = self.encoder.decode(&solabi::log::Log {
             topics: {
                 let mut converted = solabi::log::Topics::default();
@@ -118,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_event() {
+    fn decode_erc20_transfer_event() {
         let indexer = Adapter::for_signature(
             "event Transfer(address indexed to, address indexed from, uint256 value)",
         );
@@ -137,6 +152,48 @@ mod tests {
                 Value::Address(address!("0x0202020202020202020202020202020202020202")),
                 Value::Uint(Uint::new(256, uint!("4_200_000_000_000_000_000")).unwrap()),
             ]
+        );
+    }
+
+    #[test]
+    fn decode_erc721_transfer_event() {
+        let indexer = Adapter::for_signature(
+            "event Transfer(address indexed to, address indexed from, uint256 indexed id)",
+        );
+
+        let topics = [
+            keccak!("Transfer(address,address,uint256)"),
+            digest!("0x0000000000000000000000000101010101010101010101010101010101010101"),
+            digest!("0x0000000000000000000000000202020202020202020202020202020202020202"),
+            digest!("0x0000000000000000000000000000000000000000000000003a4965bf58a40000"),
+        ];
+        let data = hex!("");
+
+        assert_eq!(
+            indexer.decode(&topics, &data).unwrap(),
+            [
+                Value::Address(address!("0x0101010101010101010101010101010101010101")),
+                Value::Address(address!("0x0202020202020202020202020202020202020202")),
+                Value::Uint(Uint::new(256, uint!("4_200_000_000_000_000_000")).unwrap()),
+            ]
+        );
+    }
+
+    #[test]
+    fn ignore_erc20_transfer_event() {
+        let indexer = Adapter::for_signature(
+            "event Transfer(address indexed to, address indexed from, uint256 indexed id)",
+        );
+        let topics = [
+            keccak!("Transfer(address,address,uint256)"),
+            digest!("0x0000000000000000000000000101010101010101010101010101010101010101"),
+            digest!("0x0000000000000000000000000202020202020202020202020202020202020202"),
+        ];
+        let data = hex!("0000000000000000000000000000000000000000000000003a4965bf58a40000");
+
+        assert_eq!(
+            indexer.decode(&topics, &data).unwrap_err().to_string(),
+            "attempt to decode log with invalid topic length - got 3, expected 4".to_string(),
         );
     }
 
