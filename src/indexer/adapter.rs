@@ -139,7 +139,7 @@ mod tests {
         );
 
         let topics = [
-            keccak!("Transfer(address,address,uint256)"),
+            keccak!(b"Transfer(address,address,uint256)"),
             digest!("0x0000000000000000000000000101010101010101010101010101010101010101"),
             digest!("0x0000000000000000000000000202020202020202020202020202020202020202"),
         ];
@@ -202,8 +202,8 @@ mod tests {
         let decoder = Adapter::for_signature("event Foo(string indexed note, bool indexed flag);");
 
         let topics = [
-            keccak!("Foo(string,bool)"),
-            keccak!("hello"),
+            keccak!(b"Foo(string,bool)"),
+            keccak!(b"hello"),
             digest!("0x0000000000000000000000000000000000000000000000000000000000000001"),
         ];
         let data = [];
@@ -211,7 +211,7 @@ mod tests {
         assert_eq!(
             decoder.decode(&topics, &data).unwrap(),
             [
-                Value::FixedBytes(keccak!("hello").0.into()),
+                Value::FixedBytes(keccak!(b"hello").0.into()),
                 Value::Bool(true),
             ]
         );
