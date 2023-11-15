@@ -162,7 +162,7 @@ mod tests {
         );
 
         let topics = [
-            keccak!("Transfer(address,address,uint256)"),
+            keccak!(b"Transfer(address,address,uint256)"),
             digest!("0x0000000000000000000000000101010101010101010101010101010101010101"),
             digest!("0x0000000000000000000000000202020202020202020202020202020202020202"),
             digest!("0x0000000000000000000000000000000000000000000000003a4965bf58a40000"),
@@ -185,7 +185,7 @@ mod tests {
             "event Transfer(address indexed to, address indexed from, uint256 indexed id)",
         );
         let topics = [
-            keccak!("Transfer(address,address,uint256)"),
+            keccak!(b"Transfer(address,address,uint256)"),
             digest!("0x0000000000000000000000000101010101010101010101010101010101010101"),
             digest!("0x0000000000000000000000000202020202020202020202020202020202020202"),
         ];
