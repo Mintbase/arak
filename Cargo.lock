@@ -398,8 +398,7 @@ dependencies = [
 [[package]]
 name = "ethrpc"
 version = "0.0.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b895097e64c48a8d8b7a99d8e4608d2ed1d6ad6d5bd6806d8f7ca455dfb8ffc"
+source = "git+https://github.com/bh2smith/ethrpc-rs?rev=04ba07064fcb9ac8cf71e02d2c168819499b3616#04ba07064fcb9ac8cf71e02d2c168819499b3616"
 dependencies = [
  "arrayvec",
  "ethprim",

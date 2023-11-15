@@ -64,7 +64,6 @@ impl Postgres {
     pub async fn connect(params: &str) -> Result<Self> {
         tracing::debug!("opening postgres database");
         let client = connect(params).await.context("connect")?;
-
         client
             .execute(CREATE_EVENT_BLOCK_TABLE, &[])
             .await
@@ -86,6 +85,25 @@ impl Postgres {
             .prepare(NEW_EVENT_BLOCK)
             .await
             .context("prepare new_event_block")?;
+
+        // Prepare blocks and transactions tables:
+        client
+            .execute(CREATE_BLOCKS_TABLE, &[])
+            .await
+            .context("create blocks table")?;
+
+        client
+            .execute(CREATE_TRANSACTIONS_TABLE, &[])
+            .await
+            .context("create transactions table")?;
+        client
+            .execute(&new_event_block, &[&"blocks"])
+            .await
+            .context("add blocks to _event_blocks")?;
+        client
+            .execute(&new_event_block, &[&"transactions"])
+            .await
+            .context("add transactions to _event_blocks")?;
 
         Ok(Self {
             client,
@@ -444,6 +462,23 @@ const PRIMARY_KEY: &str = "block_number, log_index";
 /// Column for array tables.
 const ARRAY_COLUMN: &str = "array_index BIGINT NOT NULL";
 const PRIMARY_KEY_ARRAY: &str = "block_number, log_index, array_index";
+
+const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
+(
+    number INT8      PRIMARY KEY,
+    time   TIMESTAMP NOT NULL
+);"#;
+
+const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
+(
+    block_number INT8      NOT NULL,
+    index        INT8      NOT NULL,
+    hash         BYTEA     NOT NULL,
+    "from"       BYTEA     NOT NULL,
+    "to"         BYTEA,
+    PRIMARY KEY (block_number, index)
+);
+"#;
 
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed BIGINT NOT NULL, finalized \

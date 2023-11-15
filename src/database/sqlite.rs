@@ -95,6 +95,23 @@ const PRIMARY_KEY: &str = "block_number ASC, log_index ASC";
 const ARRAY_COLUMN: &str = "array_index INTEGER NOT NULL";
 const PRIMARY_KEY_ARRAY: &str = "block_number ASC, log_index ASC, array_index ASC";
 
+const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
+(
+    number INTEGER PRIMARY KEY,
+    time   TEXT    NOT NULL
+);"#;
+
+const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
+(
+    block_number INTEGER NOT NULL,
+    "index"      INTEGER NOT NULL,
+    hash         BLOB    NOT NULL,
+    "from"       BLOB    NOT NULL,
+    "to"         BLOB,
+    PRIMARY KEY (block_number, "index")
+);"#; // Can not add a new line here or will get Error:
+      // https://docs.rs/rusqlite/0.30.0/rusqlite/enum.Error.html#variant.MultipleStatement
+
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed INTEGER NOT NULL, finalized \
                                         INTEGER NOT NULL) STRICT;";
@@ -166,6 +183,23 @@ impl SqliteInner {
         connection
             .prepare_cached(TABLE_EXISTS)
             .context("prepare table_exists")?;
+
+        connection
+            .execute(CREATE_BLOCKS_TABLE, [])
+            .context("create blocks table")?;
+        connection
+            .execute(CREATE_TRANSACTIONS_TABLE, [])
+            .context("create transactions table")?;
+
+        let mut new_event_block = connection
+            .prepare_cached(NEW_EVENT_BLOCK)
+            .context("prepare new_event_block")?;
+        new_event_block
+            .execute((&"blocks",))
+            .context("add blocks to _event_blocks")?;
+        new_event_block
+            .execute((&"transactions",))
+            .context("add transactions to _event_blocks")?;
 
         Ok(Self {
             events: Default::default(),
