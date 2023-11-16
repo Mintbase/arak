@@ -330,11 +330,8 @@ fn database_block_data(
         let txs = match block.transactions {
             BlockTransactions::Full(txs) => txs,
             BlockTransactions::Hash(hashes) => match hashes.len() {
-                0 => {
-                    tracing::warn!("block with no transactions {}", number);
-                    // This happens when a block has no transactions
-                    vec![]
-                }
+                // This happens when a block has no transactions
+                0 => vec![],
                 _ => unreachable!("expected Full for Hydrated block={}", number),
             },
         };
