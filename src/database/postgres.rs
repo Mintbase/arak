@@ -228,7 +228,7 @@ impl Database for Postgres {
             let mut transaction = self.client.transaction().await.context("transaction")?;
 
             for block in blocks {
-                if !self.events.contains_key(block.event) {
+                if block.is_event() && !self.events.contains_key(block.event) {
                     return Err(anyhow!("event {} wasn't prepared", block.event));
                 }
                 let indexed: i64 = block
@@ -257,7 +257,18 @@ impl Database for Postgres {
                     .await
                     .context(format!("store_event {:?}", log))?;
             }
-
+            // Store blocks
+            for block_time in block_times {
+                Self::store_block(&mut transaction, block_time)
+                    .await
+                    .context(format!("store_block {:?}", block_time))?;
+            }
+            // Store evm transactions
+            for tx in transactions {
+                Self::store_transaction(&mut transaction, tx)
+                    .await
+                    .context(format!("store_transaction {:?}", tx))?;
+            }
             transaction.commit().await.context("commit")
         }
         .boxed()
@@ -417,13 +428,47 @@ impl Postgres {
 
     async fn store_block<'a>(
         transaction: &mut tokio_postgres::Transaction<'a>,
-        block: database::Block,
+        block: &database::BlockTime,
     ) -> Result<()> {
-        unimplemented!();
-        // transaction
-        //     .execute(&statement.sql, params.as_slice())
-        //     .await
-        //     .context("execute insert")?;
+        // println!("number {}, timestamp: {}", block.number, block.timestamp);
+        let block_number = i64::try_from(block.number).unwrap();
+        // let timestamp =
+        //     tokio_postgres::types::Timestamp::Value(i64::try_from(block.timestamp).unwrap());
+        // println!("timestamp: {:?}", timestamp);
+        // println!(
+        //     "timestamp: {:?}",
+        //     &timestamp as &(dyn tokio_postgres::types::ToSql + Sync)
+        // );
+        let params = [
+            &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
+            &block.timestamp,
+        ];
+        transaction
+            .execute(INSERT_BLOCK, &params)
+            .await
+            .context("execute insert block")?;
+        Ok(())
+    }
+
+    async fn store_transaction<'a>(
+        transaction: &mut tokio_postgres::Transaction<'a>,
+        tx: &database::Transaction,
+    ) -> Result<()> {
+        let block_number = i64::try_from(tx.block_number).unwrap();
+        let index = i64::try_from(tx.index).unwrap();
+
+        let params = [
+            &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
+            &index,
+            &tx.hash.0.into_iter().collect::<Vec<_>>(),
+            &tx.from.0.into_iter().collect::<Vec<_>>(),
+            &tx.to.map(|t| t.0.into_iter().collect::<Vec<_>>()),
+        ];
+        transaction
+            .execute(INSERT_TRANSACTION, &params)
+            .await
+            .context("execute insert transaction")?;
+        Ok(())
     }
 
     async fn create_table<'a>(
@@ -482,6 +527,10 @@ const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
     time   TIMESTAMP NOT NULL
 );"#;
 
+const INSERT_BLOCK: &str = "INSERT INTO blocks (number, time) \
+                            VALUES ($1, $2) \
+                            ON CONFLICT DO NOTHING;";
+
 const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
 (
     block_number INT8      NOT NULL,
@@ -492,6 +541,10 @@ const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactio
     PRIMARY KEY (block_number, index)
 );
 "#;
+
+const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, index, hash, "from", "to")
+                                    VALUES ($1, $2, $3, $4, $5)
+                                    ON CONFLICT DO NOTHING;"#;
 
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed BIGINT NOT NULL, finalized \

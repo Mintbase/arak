@@ -4,6 +4,7 @@ mod keywords;
 mod postgres;
 mod sqlite;
 
+use std::time::SystemTime;
 use {
     anyhow::Result,
     futures::future::BoxFuture,
@@ -22,10 +23,20 @@ pub struct Block {
 }
 
 /// Block indexing information attached to an event.
+/// Also used for `blocks` and `transactions` (which are not events).
 #[derive(Debug)]
 pub struct EventBlock<'a> {
     pub event: &'a str,
     pub block: Block,
+}
+
+impl<'a> EventBlock<'a> {
+    pub fn is_event(&self) -> bool {
+        // TODO - note that this implies blocks and transactions are "reserved" keywords
+        //  So we should not allow events to have these names. OR this can be done differently.
+        //  Maybe we should use _blocks and _transactions!
+        !["blocks", "transactions"].contains(&self.event)
+    }
 }
 
 /// An uncled block. All logs for this block or newer are considered invalid.
@@ -47,10 +58,10 @@ pub struct Log<'a> {
 }
 
 /// A basic Ethereum block.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BlockTime {
     pub number: u64,
-    pub timestamp: u64,
+    pub timestamp: SystemTime,
 }
 
 /// A basic Ethereum transaction.

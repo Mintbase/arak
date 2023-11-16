@@ -2,6 +2,7 @@
 
 use ethrpc::types::BlockTransactions;
 use solabi::U256;
+use std::time::SystemTime;
 
 mod adapter;
 mod chain;
@@ -323,7 +324,7 @@ fn database_block_data(
         let number = block.number.as_u64();
         blocks.push(database::BlockTime {
             number,
-            timestamp: block.timestamp.as_u64(),
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(block.timestamp.as_u64()),
         });
 
         let txs = match block.transactions {
