@@ -1,5 +1,8 @@
 //! Ethereum event indexer for a collection of events.
 
+use ethrpc::types::BlockTransactions;
+use solabi::U256;
+
 mod adapter;
 mod chain;
 
@@ -12,7 +15,7 @@ use {
     anyhow::{Context, Result},
     ethrpc::{
         eth,
-        types::{Block, BlockTag, Hydrated, LogBlocks},
+        types::{Block, BlockSpec, BlockTag, Hydrated, LogBlocks},
     },
     std::{cmp, time::Duration},
     tokio::time,
@@ -123,6 +126,18 @@ where
             let to = cmp::min(finalized.number.as_u64(), earliest + config.page_size - 1);
             tracing::debug!(from =% earliest, %to, "indexing blocks");
 
+            // First fetch Blocks and Transaction Data
+            // TODO - ensure earliest and to are aligned with _event_blocks table.
+            let block_queries: Vec<(_, _)> = (earliest..to)
+                .map(|block: u64| {
+                    (
+                        eth::GetBlockByNumber,
+                        (BlockSpec::Number(U256::from(block)), Hydrated::Yes),
+                    )
+                })
+                .collect();
+            let block_tx_data = self.eth.batch(block_queries).await?;
+
             // Prepare `eth_getLogs` queries, noting the indices of their
             // corresponding adapters for decoding responses.
             let (adapters, queries) = self
@@ -148,7 +163,7 @@ where
             // Compute the database updates required:
             // - Update latest indexed blocks for the events that were queried
             // - Add the logs to the DB.
-            let blocks = adapters
+            let mut blocks = adapters
                 .iter()
                 .copied()
                 .map(|adapter| database::EventBlock {
@@ -165,7 +180,27 @@ where
                 .flat_map(|(adapter, logs)| database_logs(adapter, logs))
                 .collect::<Vec<_>>();
 
-            self.database.update(&blocks, &logs).await?;
+            // Add blocks and transactions.
+            blocks.extend([
+                database::EventBlock {
+                    event: "blocks",
+                    block: database::Block {
+                        indexed: to,
+                        finalized: finalized.number.as_u64(),
+                    },
+                },
+                database::EventBlock {
+                    event: "transactions",
+                    block: database::Block {
+                        indexed: to,
+                        finalized: finalized.number.as_u64(),
+                    },
+                },
+            ]);
+            let (block_times, transactions) = database_block_data(block_tx_data);
+            self.database
+                .update(&blocks, &logs, &block_times, &transactions)
+                .await?;
         }
     }
 
@@ -257,8 +292,8 @@ where
             .zip(results)
             .flat_map(|(adapter, logs)| database_logs(adapter, logs))
             .collect::<Vec<_>>();
-
-        self.database.update(&blocks, &logs).await?;
+        // TODO - use non-trivial stuff here!
+        self.database.update(&blocks, &logs, &[], &[]).await?;
         Ok(true)
     }
 
@@ -271,8 +306,49 @@ where
                 self.database.event_block(adapter.name()).await?.indexed + 1,
             ));
         }
+        // These are non-adapter tables.
+        blocks.push(self.database.event_block("blocks").await?.indexed + 1);
+        blocks.push(self.database.event_block("transactions").await?.indexed + 1);
         Ok(blocks)
     }
+}
+
+fn database_block_data(
+    block_data: Vec<Option<Block>>,
+) -> (Vec<database::BlockTime>, Vec<database::Transaction>) {
+    let mut blocks = vec![];
+    let mut transactions = vec![];
+
+    for block in block_data.into_iter().flatten() {
+        let number = block.number.as_u64();
+        blocks.push(database::BlockTime {
+            number,
+            timestamp: block.timestamp.as_u64(),
+        });
+
+        let txs = match block.transactions {
+            BlockTransactions::Full(txs) => txs,
+            BlockTransactions::Hash(hashes) => match hashes.len() {
+                0 => {
+                    tracing::warn!("block with no transactions {}", number);
+                    // This happens when a block has no transactions
+                    vec![]
+                }
+                _ => unreachable!("expected Full for Hydrated block={}", number),
+            },
+        };
+        for tx in txs {
+            transactions.push(database::Transaction {
+                block_number: number,
+                index: tx.transaction_index().as_u64(),
+                hash: tx.hash(),
+                from: tx.from(),
+                to: tx.to(),
+            });
+        }
+    }
+
+    (blocks, transactions)
 }
 
 fn database_logs(

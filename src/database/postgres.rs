@@ -221,6 +221,8 @@ impl Database for Postgres {
         &'a mut self,
         blocks: &'a [database::EventBlock],
         logs: &'a [database::Log],
+        block_times: &'a [database::BlockTime],
+        transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
             let mut transaction = self.client.transaction().await.context("transaction")?;
@@ -413,6 +415,17 @@ impl Postgres {
         Ok(())
     }
 
+    async fn store_block<'a>(
+        transaction: &mut tokio_postgres::Transaction<'a>,
+        block: database::Block,
+    ) -> Result<()> {
+        unimplemented!();
+        // transaction
+        //     .execute(&statement.sql, params.as_slice())
+        //     .await
+        //     .context("execute insert")?;
+    }
+
     async fn create_table<'a>(
         transaction: &tokio_postgres::Transaction<'a>,
         is_array: bool,
@@ -574,7 +587,7 @@ event Event (
             ],
             ..Default::default()
         };
-        db.update(&[], &[log]).await.unwrap();
+        db.update(&[], &[log], &[], &[]).await.unwrap();
     }
 
     #[ignore]
@@ -603,6 +616,6 @@ event Event (
             ],
             ..Default::default()
         };
-        db.update(&[], &[log]).await.unwrap();
+        db.update(&[], &[log], &[], &[]).await.unwrap();
     }
 }

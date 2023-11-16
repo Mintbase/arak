@@ -10,6 +10,8 @@ use {
     solabi::{abi::EventDescriptor, ethprim::Address, value::Value},
 };
 
+use solabi::Digest;
+
 pub use self::{postgres::Postgres, sqlite::Sqlite};
 
 /// Block indexing information.
@@ -42,6 +44,23 @@ pub struct Log<'a> {
     pub transaction_index: u64,
     pub address: Address,
     pub fields: Vec<Value>,
+}
+
+/// A basic Ethereum block.
+#[derive(Debug, Default)]
+pub struct BlockTime {
+    pub number: u64,
+    pub timestamp: u64,
+}
+
+/// A basic Ethereum transaction.
+#[derive(Debug, Default)]
+pub struct Transaction {
+    pub block_number: u64,
+    pub index: u64,
+    pub hash: Digest,
+    pub from: Address,
+    pub to: Option<Address>,
 }
 
 /// Abstraction over specific SQL like backends.
@@ -91,6 +110,8 @@ pub trait Database {
         &'a mut self,
         blocks: &'a [EventBlock],
         logs: &'a [Log],
+        block_times: &'a [BlockTime],
+        transactions: &'a [Transaction],
     ) -> BoxFuture<'a, Result<()>>;
 
     /// Removes logs from the specified event's uncled blocks.

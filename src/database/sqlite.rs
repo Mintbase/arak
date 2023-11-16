@@ -66,6 +66,9 @@ impl Database for Sqlite {
         &'a mut self,
         blocks: &'a [database::EventBlock],
         logs: &'a [database::Log],
+        // TODO - add support here.
+        _block_times: &'a [database::BlockTime],
+        _transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
             let transaction = self.connection.transaction().context("transaction")?;
@@ -625,6 +628,8 @@ event Event (
                     address: Address([4; 20]),
                     fields,
                 }],
+                &[],
+                &[],
             )
             .await
             .unwrap();
@@ -661,7 +666,7 @@ event Event (
             )],
             ..Default::default()
         };
-        sqlite.update(&[], &[log]).await.unwrap();
+        sqlite.update(&[], &[log], &[], &[]).await.unwrap();
 
         let log = Log {
             event: "event",
@@ -671,7 +676,7 @@ event Event (
             )],
             ..Default::default()
         };
-        sqlite.update(&[], &[log]).await.unwrap();
+        sqlite.update(&[], &[log], &[], &[]).await.unwrap();
 
         print_table(&sqlite.connection, "event");
         print_table(&sqlite.connection, "event_array_0");
@@ -692,7 +697,7 @@ event Event (
                 finalized: 3,
             },
         };
-        sqlite.update(&[blocks], &[]).await.unwrap();
+        sqlite.update(&[blocks], &[], &[], &[]).await.unwrap();
         let result = sqlite.event_block("event").await.unwrap();
         assert_eq!(result.indexed, 2);
         assert_eq!(result.finalized, 3);
@@ -730,6 +735,8 @@ event Event (
                         ..Default::default()
                     },
                 ],
+                &[],
+                &[],
             )
             .await
             .unwrap();
