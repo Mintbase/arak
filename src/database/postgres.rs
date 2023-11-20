@@ -592,12 +592,13 @@ fn abi_kind_to_sql_type(value: &AbiKind) -> Option<tokio_postgres::types::Type> 
 
 #[cfg(test)]
 mod tests {
-    use solabi::{
-        value::{Int, Uint},
-        I256, U256,
+    use {
+        super::*,
+        solabi::{
+            value::{Int, Uint},
+            I256, U256,
+        },
     };
-
-    use super::*;
 
     fn local_postgres_url() -> String {
         "postgresql://postgres@localhost".to_string()
@@ -607,13 +608,14 @@ mod tests {
         let client = connect(&local_postgres_url()).await.unwrap();
         // https://stackoverflow.com/a/36023359
         let query = r#"
-DO $$ DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
-        EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
-    END LOOP;
-END $$;
+            DO $$ DECLARE
+                r RECORD;
+            BEGIN
+                FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) 
+                LOOP
+                    EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                END LOOP;
+            END $$;
         "#;
         client.batch_execute(query).await.unwrap();
     }
@@ -624,11 +626,11 @@ END $$;
         clear_database().await;
         let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
         let event = r#"
-event Event (
-    uint256,
-    int256
-)
-"#;
+            event Event (
+                uint256,
+                int256
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         db.prepare_event("event", &event).await.unwrap();
         let log = Log {
@@ -649,12 +651,12 @@ event Event (
         clear_database().await;
         let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
         let event = r#"
-event Event (
-    bool,
-    bool,
-    string
-)
-"#;
+            event Event (
+                bool,
+                bool,
+                string
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         db.prepare_event("event", &event).await.unwrap();
         let log = Log {

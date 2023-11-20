@@ -3,7 +3,7 @@ use {
         self,
         event_to_tables::Table,
         event_visitor::{self, VisitValue},
-        Database, Log,
+        BlockTime, Database, Log,
     },
     anyhow::{anyhow, Context, Result},
     futures::{future::BoxFuture, FutureExt},
@@ -15,7 +15,7 @@ use {
         abi::EventDescriptor,
         value::{Value as AbiValue, ValueKind as AbiKind},
     },
-    std::{collections::HashMap, fmt::Write},
+    std::{collections::HashMap, fmt::Write, time::SystemTime},
 };
 
 pub struct Sqlite {
@@ -66,13 +66,13 @@ impl Database for Sqlite {
         &'a mut self,
         blocks: &'a [database::EventBlock],
         logs: &'a [database::Log],
-        // TODO - add support here.
-        _block_times: &'a [database::BlockTime],
-        _transactions: &'a [database::Transaction],
+        block_times: &'a [database::BlockTime],
+        transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
             let transaction = self.connection.transaction().context("transaction")?;
-            self.inner.update(&transaction, blocks, logs)?;
+            self.inner
+                .update(&transaction, blocks, logs, block_times, transactions)?;
             transaction.commit().context("commit")
         }
         .boxed()
@@ -104,6 +104,10 @@ const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
     time   TEXT    NOT NULL
 );"#;
 
+const INSERT_BLOCK: &str = "INSERT INTO blocks (number, time) \
+                            VALUES (?1, ?2) \
+                            ON CONFLICT DO NOTHING;";
+
 const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
 (
     block_number INTEGER NOT NULL,
@@ -115,6 +119,9 @@ const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactio
 );"#; // Can not add a new line here or will get Error:
       // https://docs.rs/rusqlite/0.30.0/rusqlite/enum.Error.html#variant.MultipleStatement
 
+const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, "index", hash, "from", "to")
+                                    VALUES (?1, ?2, ?3, ?4, ?5)
+                                    ON CONFLICT DO NOTHING;"#;
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed INTEGER NOT NULL, finalized \
                                         INTEGER NOT NULL) STRICT;";
@@ -384,7 +391,7 @@ impl SqliteInner {
 
     fn store_event<'a>(
         &self,
-        con: &Transaction,
+        conn: &Transaction,
         Log {
             event,
             block_number,
@@ -476,9 +483,9 @@ impl SqliteInner {
         for (statement, (array_element_count, values)) in
             event.insert_statements.iter().zip(sql_values)
         {
-            let mut statement_ = con
+            let mut statement_ = conn
                 .prepare_cached(&statement.sql)
-                .context("prepare_cached")?;
+                .context("prepare_cached event")?;
             let is_array = array_element_count.is_some();
             let array_element_count = array_element_count.unwrap_or(1);
             assert_eq!(statement.fields * array_element_count, values.len());
@@ -495,10 +502,47 @@ impl SqliteInner {
                         .chain(array_index.as_ref())
                         .chain(row),
                 );
-                statement_.insert(params).context("insert")?;
+                statement_.insert(params).context("insert event")?;
             }
         }
 
+        Ok(())
+    }
+
+    fn store_block(&self, conn: &Transaction, block_time: &BlockTime) -> Result<()> {
+        let number = ToSqlOutput::Owned(SqlValue::Integer((block_time.number).try_into().unwrap()));
+        // TODO - this is not a date string but a unix timestamp.
+        //  Maybe use chrono::NaiveDateTime ... why not part of std::*?
+        let time = ToSqlOutput::Owned(SqlValue::Text(
+            block_time
+                .timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .to_string(),
+        ));
+        conn.prepare_cached(INSERT_BLOCK)
+            .context("prepare_cached block insert")?
+            .insert([number, time])
+            .context("insert block")?;
+        Ok(())
+    }
+
+    fn store_transaction(&self, conn: &Transaction, tx: &database::Transaction) -> Result<()> {
+        let block_number =
+            ToSqlOutput::Owned(SqlValue::Integer((tx.block_number).try_into().unwrap()));
+        let index = ToSqlOutput::Owned(SqlValue::Integer((tx.index).try_into().unwrap()));
+        let hash = ToSqlOutput::Owned(SqlValue::Blob(tx.hash.to_vec()));
+        let from = ToSqlOutput::Owned(SqlValue::Blob(tx.from.to_vec()));
+        let to = ToSqlOutput::Owned(match tx.to {
+            Some(val) => SqlValue::Blob(val.to_vec()),
+            None => SqlValue::Null,
+        });
+
+        conn.prepare_cached(INSERT_TRANSACTION)
+            .context("prepare_cached transaction insert")?
+            .insert([block_number, index, hash, from, to])
+            .context("insert block")?;
         Ok(())
     }
 
@@ -507,11 +551,20 @@ impl SqliteInner {
         con: &Transaction,
         blocks: &[database::EventBlock],
         logs: &[database::Log],
+        block_times: &[database::BlockTime],
+        transactions: &[database::Transaction],
     ) -> Result<()> {
         self.set_event_blocks(con, blocks)
             .context("set_event_blocks")?;
         for log in logs {
             self.store_event(con, log).context("store_event")?;
+        }
+        for block_time in block_times {
+            self.store_block(con, block_time).context("store_block")?;
+        }
+        for tx in transactions {
+            self.store_transaction(con, tx)
+                .context("store_transaction")?;
         }
         Ok(())
     }
@@ -562,10 +615,12 @@ mod tests {
     use {
         super::*,
         solabi::{
+            digest,
             ethprim::Address,
             function::{ExternalFunction, Selector},
             value::{Array, FixedBytes, Int, Uint},
         },
+        std::time::{Duration, SystemTime},
     };
 
     #[test]
@@ -628,13 +683,26 @@ event Event (
                     address: Address([4; 20]),
                     fields,
                 }],
-                &[],
-                &[],
+                &[database::BlockTime {
+                    number: 1,
+                    timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(1700480449),
+                }],
+                &[database::Transaction {
+                    block_number: 1,
+                    index: 2,
+                    hash: digest!(
+                        "0x0000000000000000000000000101010101010101010101010101010101010101"
+                    ),
+                    from: Address([4; 20]),
+                    to: Some(Address([4; 20])),
+                }],
             )
             .await
             .unwrap();
 
         print_table(&sqlite.connection, "event");
+        print_table(&sqlite.connection, "blocks");
+        print_table(&sqlite.connection, "transactions");
     }
 
     #[tokio::test]
