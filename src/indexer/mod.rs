@@ -1,9 +1,5 @@
 //! Ethereum event indexer for a collection of events.
 
-use ethrpc::types::BlockTransactions;
-use solabi::U256;
-use std::time::SystemTime;
-
 mod adapter;
 mod chain;
 
@@ -16,9 +12,13 @@ use {
     anyhow::{Context, Result},
     ethrpc::{
         eth,
-        types::{Block, BlockSpec, BlockTag, Hydrated, LogBlocks},
+        types::{Block, BlockSpec, BlockTag, BlockTransactions, Hydrated, LogBlocks},
     },
-    std::{cmp, time::Duration},
+    solabi::U256,
+    std::{
+        cmp,
+        time::{Duration, SystemTime},
+    },
     tokio::time,
 };
 
@@ -301,15 +301,28 @@ where
     /// Computes the blocks to start initializing from for each adapter.
     async fn init_blocks(&mut self) -> Result<Vec<u64>> {
         let mut blocks = Vec::new();
+        let mut min_index_block = u64::MAX;
         for adapter in self.adapters.iter() {
+            // Compute earliest block (as min of all event adapters)
+            // to start indexing blocks and transactions
+            let adapter_start = adapter.start();
+            if adapter_start < min_index_block {
+                min_index_block = adapter_start;
+            }
             blocks.push(cmp::max(
-                adapter.start(),
+                adapter_start,
                 self.database.event_block(adapter.name()).await?.indexed + 1,
             ));
         }
         // These are non-adapter tables.
-        blocks.push(self.database.event_block("blocks").await?.indexed + 1);
-        blocks.push(self.database.event_block("transactions").await?.indexed + 1);
+        blocks.push(cmp::max(
+            min_index_block,
+            self.database.event_block("blocks").await?.indexed + 1,
+        ));
+        blocks.push(cmp::max(
+            min_index_block,
+            self.database.event_block("transactions").await?.indexed + 1,
+        ));
         Ok(blocks)
     }
 }
@@ -324,7 +337,7 @@ fn database_block_data(
         let number = block.number.as_u64();
         blocks.push(database::BlockTime {
             number,
-            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(block.timestamp.as_u64()),
+            timestamp: timestamp_to_systemtime(block.timestamp.as_u64()),
         });
 
         let txs = match block.transactions {
@@ -381,4 +394,25 @@ fn database_logs(
                 fields,
             })
         })
+}
+
+pub fn timestamp_to_systemtime(timestamp: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_conversions() {
+        // Time Zero
+        assert_eq!(timestamp_to_systemtime(0), SystemTime::UNIX_EPOCH);
+
+        // First Ethereum Block: https://etherscan.io/block/1
+        assert_eq!(
+            timestamp_to_systemtime(1438262788),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1438262788)
+        );
+    }
 }

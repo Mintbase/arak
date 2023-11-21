@@ -5,11 +5,11 @@ mod keywords;
 mod postgres;
 mod sqlite;
 
-use std::time::SystemTime;
 use {
     anyhow::Result,
     futures::future::BoxFuture,
     solabi::{abi::EventDescriptor, ethprim::Address, value::Value},
+    std::time::SystemTime,
 };
 
 use solabi::Digest;

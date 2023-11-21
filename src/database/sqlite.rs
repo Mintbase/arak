@@ -1,8 +1,7 @@
-use super::date_util::system_time_to_string;
-
 use {
     crate::database::{
         self,
+        date_util::systemtime_to_string,
         event_to_tables::Table,
         event_visitor::{self, VisitValue},
         BlockTime, Database, Log,
@@ -106,9 +105,7 @@ const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
     time   TEXT    NOT NULL
 );"#;
 
-const INSERT_BLOCK: &str = "INSERT INTO blocks (number, time) \
-                            VALUES (?1, ?2) \
-                            ON CONFLICT DO NOTHING;";
+const INSERT_BLOCK: &str = "INSERT OR IGNORE INTO blocks (number, time) VALUES (?1, ?2);";
 
 const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
 (
@@ -513,13 +510,13 @@ impl SqliteInner {
 
     fn store_block(&self, conn: &Transaction, block_time: &BlockTime) -> Result<()> {
         let number = ToSqlOutput::Owned(SqlValue::Integer((block_time.number).try_into().unwrap()));
-        let time = ToSqlOutput::Owned(SqlValue::Text(system_time_to_string(
+        let time = ToSqlOutput::Owned(SqlValue::Text(systemtime_to_string(
             block_time.timestamp,
             None,
         )));
         conn.prepare_cached(INSERT_BLOCK)
             .context("prepare_cached block insert")?
-            .insert([number, time])
+            .execute([number, time])
             .context("insert block")?;
         Ok(())
     }
@@ -537,8 +534,8 @@ impl SqliteInner {
 
         conn.prepare_cached(INSERT_TRANSACTION)
             .context("prepare_cached transaction insert")?
-            .insert([block_number, index, hash, from, to])
-            .context("insert block")?;
+            .execute([block_number, index, hash, from, to])
+            .context("insert transaction")?;
         Ok(())
     }
 

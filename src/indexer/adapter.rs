@@ -3,10 +3,9 @@
 //! - Generate Ethereum RPC log filters for the specified configuration
 //! - Decode Ethereum log topics and data into Solidity values
 
-use anyhow::anyhow;
 use {
     crate::config,
-    anyhow::{Context, Result},
+    anyhow::{anyhow, Context, Result},
     ethrpc::types::{ArrayVec, Digest, LogBlocks, LogFilter, LogFilterValue},
     solabi::{
         abi::EventDescriptor,
