@@ -31,5 +31,14 @@ mod tests {
             ),
             "2015-07-30 13:26:28"
         );
+
+        // Different Formats
+        assert_eq!(
+            system_time_to_string(
+                SystemTime::UNIX_EPOCH,
+                Some("Date(%Y-%m-%d)-Time(%H:%M:%S)")
+            ),
+            "Date(1970-01-01)-Time(00:00:00)"
+        );
     }
 }
