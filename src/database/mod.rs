@@ -1,3 +1,4 @@
+mod date_util;
 mod event_to_tables;
 mod event_visitor;
 mod keywords;

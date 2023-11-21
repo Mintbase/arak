@@ -1,3 +1,5 @@
+use super::date_util::system_time_to_string;
+
 use {
     crate::database::{
         self,
@@ -15,7 +17,7 @@ use {
         abi::EventDescriptor,
         value::{Value as AbiValue, ValueKind as AbiKind},
     },
-    std::{collections::HashMap, fmt::Write, time::SystemTime},
+    std::{collections::HashMap, fmt::Write},
 };
 
 pub struct Sqlite {
@@ -511,16 +513,10 @@ impl SqliteInner {
 
     fn store_block(&self, conn: &Transaction, block_time: &BlockTime) -> Result<()> {
         let number = ToSqlOutput::Owned(SqlValue::Integer((block_time.number).try_into().unwrap()));
-        // TODO - this is not a date string but a unix timestamp.
-        //  Maybe use chrono::NaiveDateTime ... why not part of std::*?
-        let time = ToSqlOutput::Owned(SqlValue::Text(
-            block_time
-                .timestamp
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                .to_string(),
-        ));
+        let time = ToSqlOutput::Owned(SqlValue::Text(system_time_to_string(
+            block_time.timestamp,
+            None,
+        )));
         conn.prepare_cached(INSERT_BLOCK)
             .context("prepare_cached block insert")?
             .insert([number, time])
@@ -645,17 +641,17 @@ mod tests {
     async fn full_leaf_types() {
         let mut sqlite = Sqlite::new_for_test();
         let event = r#"
-event Event (
-    int256,
-    uint256,
-    address,
-    bool,
-    bytes1,
-    function,
-    bytes,
-    string
-)
-"#;
+            event Event (
+                int256,
+                uint256,
+                address,
+                bool,
+                bytes1,
+                function,
+                bytes,
+                string
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         sqlite.prepare_event("event", &event).await.unwrap();
 
@@ -709,10 +705,10 @@ event Event (
     async fn with_array() {
         let mut sqlite = Sqlite::new_for_test();
         let event = r#"
-event Event (
-    (bool, string)[]
-)
-"#;
+            event Event (
+                (bool, string)[]
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         sqlite.prepare_event("event", &event).await.unwrap();
 
