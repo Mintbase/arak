@@ -249,7 +249,7 @@ impl SqliteInner {
             .prepare_cached(SET_EVENT_BLOCK)
             .context("prepare_cached")?;
         for block in blocks {
-            if !self.events.contains_key(block.event) {
+            if block.is_event() && !self.events.contains_key(block.event) {
                 return Err(anyhow!("event {} wasn't prepared", block.event));
             }
             let indexed: i64 = block

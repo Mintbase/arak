@@ -430,15 +430,7 @@ impl Postgres {
         transaction: &mut tokio_postgres::Transaction<'a>,
         block: &database::BlockTime,
     ) -> Result<()> {
-        // println!("number {}, timestamp: {}", block.number, block.timestamp);
         let block_number = i64::try_from(block.number).unwrap();
-        // let timestamp =
-        //     tokio_postgres::types::Timestamp::Value(i64::try_from(block.timestamp).unwrap());
-        // println!("timestamp: {:?}", timestamp);
-        // println!(
-        //     "timestamp: {:?}",
-        //     &timestamp as &(dyn tokio_postgres::types::ToSql + Sync)
-        // );
         let params = [
             &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
             &block.timestamp,
