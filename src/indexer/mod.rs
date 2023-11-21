@@ -81,6 +81,9 @@ where
                 .prepare_event(adapter.name(), adapter.signature())
                 .await?;
         }
+        // TODO - should probably also prepare event for block and transaction.
+        //  this might make the whole flow easier if it were handled among the others.
+        //  but it doesn't align so well with the fact that blocks table has field number instead of block_number.
 
         let mut unfinalized = Vec::new();
         for adapter in self.adapters.iter() {
@@ -138,7 +141,6 @@ where
                 })
                 .collect();
             let block_tx_data = self.eth.batch(block_queries).await?;
-
             // Prepare `eth_getLogs` queries, noting the indices of their
             // corresponding adapters for decoding responses.
             let (adapters, queries) = self
@@ -159,8 +161,11 @@ where
                     )
                 })
                 .unzip::<_, _, Vec<_>, Vec<_>>();
-            let results = self.eth.batch(queries).await?;
-
+            let results = if !queries.is_empty() {
+                self.eth.batch(queries).await?
+            } else {
+                Vec::new()
+            };
             // Compute the database updates required:
             // - Update latest indexed blocks for the events that were queried
             // - Add the logs to the DB.
@@ -213,7 +218,7 @@ where
 
         let next = match self
             .eth
-            .call(eth::GetBlockByNumber, (chain.next().into(), Hydrated::No))
+            .call(eth::GetBlockByNumber, (chain.next().into(), Hydrated::Yes))
             .await?
         {
             Some(value) => value,
@@ -294,7 +299,10 @@ where
             .flat_map(|(adapter, logs)| database_logs(adapter, logs))
             .collect::<Vec<_>>();
         // TODO - use non-trivial stuff here!
-        self.database.update(&blocks, &logs, &[], &[]).await?;
+        let (block_times, transactions) = database_block_data(vec![Some(next)]);
+        self.database
+            .update(&blocks, &logs, &block_times, &transactions)
+            .await?;
         Ok(true)
     }
 

@@ -295,6 +295,25 @@ impl Database for Postgres {
                         .await
                         .context("execute set_indexed_block")?;
                 }
+
+                // Remove blocks and transactions as well.
+                transaction
+                    .execute(REMOVE_BLOCKS_FROM, &[&block])
+                    .await
+                    .context("execute remove_statement (blocks)")?;
+                transaction
+                    .execute(&self.set_indexed_block, &[&"blocks", &parent_block])
+                    .await
+                    .context("set_indexed_block")?;
+
+                transaction
+                    .execute(REMOVE_TRANSACTIONS_FROM, &[&block])
+                    .await
+                    .context("execute remove_statement (blocks)")?;
+                transaction
+                    .execute(&self.set_indexed_block, &[&"transactions", &parent_block])
+                    .await
+                    .context("set_indexed_block")?;
             }
 
             transaction.commit().await.context("commit")
@@ -523,6 +542,8 @@ const INSERT_BLOCK: &str = "INSERT INTO blocks (number, time) \
                             VALUES ($1, $2) \
                             ON CONFLICT DO NOTHING;";
 
+const REMOVE_BLOCKS_FROM: &str = "DELETE FROM blocks WHERE number >= $1;";
+
 const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
 (
     block_number INT8      NOT NULL,
@@ -537,6 +558,8 @@ const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactio
 const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, index, hash, "from", "to")
                                     VALUES ($1, $2, $3, $4, $5)
                                     ON CONFLICT DO NOTHING;"#;
+
+const REMOVE_TRANSACTIONS_FROM: &str = "DELETE FROM transactions WHERE block_number >=$1;";
 
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed BIGINT NOT NULL, finalized \

@@ -107,6 +107,8 @@ const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
 
 const INSERT_BLOCK: &str = "INSERT OR IGNORE INTO blocks (number, time) VALUES (?1, ?2);";
 
+const REMOVE_BLOCKS_FROM: &str = "DELETE FROM blocks WHERE number >=?1;";
+
 const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
 (
     block_number INTEGER NOT NULL,
@@ -121,6 +123,9 @@ const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactio
 const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, "index", hash, "from", "to")
                                     VALUES (?1, ?2, ?3, ?4, ?5)
                                     ON CONFLICT DO NOTHING;"#;
+
+const REMOVE_TRANSACTIONS_FROM: &str = "DELETE FROM transactions WHERE block_number >=?1;";
+
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed INTEGER NOT NULL, finalized \
                                         INTEGER NOT NULL) STRICT;";
@@ -563,7 +568,7 @@ impl SqliteInner {
     }
 
     fn remove(&self, connection: &Connection, uncles: &[database::Uncle]) -> Result<()> {
-        let mut set_indexed_block = connection
+        let mut set_indexed_block: rusqlite::CachedStatement<'_> = connection
             .prepare_cached(SET_INDEXED_BLOCK)
             .context("prepare_cached set_indexed_block")?;
         for uncle in uncles {
@@ -584,6 +589,19 @@ impl SqliteInner {
                     .execute((uncle.event, parent_block))
                     .context("execute set_indexed_block")?;
             }
+
+            // Remove blocks and transactions as well.
+            let mut remove_statement = connection.prepare_cached(REMOVE_BLOCKS_FROM)?;
+            remove_statement
+                .execute((block,))
+                .context("execute remove_statement (blocks)")?;
+            set_indexed_block.execute(("blocks", parent_block))?;
+
+            let mut remove_statement = connection.prepare_cached(REMOVE_TRANSACTIONS_FROM)?;
+            remove_statement
+                .execute((block,))
+                .context("execute remove_statement (transactions)")?;
+            set_indexed_block.execute(("transactions", parent_block))?;
         }
         Ok(())
     }
@@ -613,7 +631,7 @@ mod tests {
             function::{ExternalFunction, Selector},
             value::{Array, FixedBytes, Int, Uint},
         },
-        std::time::{Duration, SystemTime},
+        std::time::SystemTime,
     };
 
     #[test]
@@ -678,7 +696,7 @@ mod tests {
                 }],
                 &[database::BlockTime {
                     number: 1,
-                    timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(1700480449),
+                    timestamp: SystemTime::UNIX_EPOCH,
                 }],
                 &[database::Transaction {
                     block_number: 1,
@@ -764,6 +782,16 @@ mod tests {
         assert_eq!(result.finalized, 3);
     }
 
+    fn count_rows(db: &Sqlite, table_name: &str) -> i64 {
+        let count: i64 = db
+            .connection
+            .query_row(&format!("SELECT COUNT(*) FROM {}", table_name), (), |row| {
+                row.get(0)
+            })
+            .unwrap();
+        count
+    }
+
     #[tokio::test]
     async fn remove() {
         let mut sqlite = Sqlite::new_for_test();
@@ -796,8 +824,36 @@ mod tests {
                         ..Default::default()
                     },
                 ],
-                &[],
-                &[],
+                &[
+                    BlockTime {
+                        number: 5,
+                        timestamp: SystemTime::UNIX_EPOCH,
+                    },
+                    BlockTime {
+                        number: 6,
+                        timestamp: SystemTime::UNIX_EPOCH,
+                    },
+                ],
+                &[
+                    database::Transaction {
+                        block_number: 5,
+                        index: 2,
+                        hash: digest!(
+                            "0x0000000000000000000000000000000000000000000000000000000000000111"
+                        ),
+                        from: Address([4; 20]),
+                        to: Some(Address([4; 20])),
+                    },
+                    database::Transaction {
+                        block_number: 6,
+                        index: 2,
+                        hash: digest!(
+                            "0x0000000000000000000000000000000000000000000000000000000000000222"
+                        ),
+                        from: Address([4; 20]),
+                        to: Some(Address([4; 20])),
+                    },
+                ],
             )
             .await
             .unwrap();
@@ -810,6 +866,8 @@ mod tests {
             count
         };
         assert_eq!(rows(&sqlite), 4);
+        assert_eq!(count_rows(&sqlite, "transactions"), 2);
+        assert_eq!(count_rows(&sqlite, "blocks"), 2);
 
         sqlite
             .remove(&[database::Uncle {
@@ -819,6 +877,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows(&sqlite), 3);
+        assert_eq!(count_rows(&sqlite, "transactions"), 1);
+        assert_eq!(count_rows(&sqlite, "blocks"), 1);
 
         sqlite
             .remove(&[database::Uncle {
@@ -828,7 +888,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows(&sqlite), 3);
-
+        assert_eq!(count_rows(&sqlite, "transactions"), 0);
+        assert_eq!(count_rows(&sqlite, "blocks"), 0);
         sqlite
             .remove(&[database::Uncle {
                 event: "event",
