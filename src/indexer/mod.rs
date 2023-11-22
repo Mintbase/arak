@@ -298,7 +298,7 @@ where
             .zip(results)
             .flat_map(|(adapter, logs)| database_logs(adapter, logs))
             .collect::<Vec<_>>();
-        // TODO - use non-trivial stuff here!
+
         let (block_times, transactions) = database_block_data(vec![Some(next)]);
         self.database
             .update(&blocks, &logs, &block_times, &transactions)
