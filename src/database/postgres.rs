@@ -64,7 +64,6 @@ impl Postgres {
     pub async fn connect(params: &str) -> Result<Self> {
         tracing::debug!("opening postgres database");
         let client = connect(params).await.context("connect")?;
-
         client
             .execute(CREATE_EVENT_BLOCK_TABLE, &[])
             .await
@@ -87,6 +86,25 @@ impl Postgres {
             .await
             .context("prepare new_event_block")?;
 
+        // Prepare blocks and transactions tables:
+        client
+            .execute(CREATE_BLOCKS_TABLE, &[])
+            .await
+            .context("create blocks table")?;
+
+        client
+            .execute(CREATE_TRANSACTIONS_TABLE, &[])
+            .await
+            .context("create transactions table")?;
+        client
+            .execute(&new_event_block, &[&"blocks"])
+            .await
+            .context("add blocks to _event_blocks")?;
+        client
+            .execute(&new_event_block, &[&"transactions"])
+            .await
+            .context("add transactions to _event_blocks")?;
+
         Ok(Self {
             client,
             events: Default::default(),
@@ -96,6 +114,15 @@ impl Postgres {
             new_event_block,
         })
     }
+}
+
+fn validate_rows(rows: u64) -> Result<()> {
+    if rows != 1 {
+        return Err(anyhow!(
+            "query unexpectedly changed {rows} rows instead of 1"
+        ));
+    }
+    Ok(())
 }
 
 impl Database for Postgres {
@@ -203,12 +230,14 @@ impl Database for Postgres {
         &'a mut self,
         blocks: &'a [database::EventBlock],
         logs: &'a [database::Log],
+        block_times: &'a [database::BlockTime],
+        transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
             let mut transaction = self.client.transaction().await.context("transaction")?;
 
             for block in blocks {
-                if !self.events.contains_key(block.event) {
+                if block.is_event() && !self.events.contains_key(block.event) {
                     return Err(anyhow!("event {} wasn't prepared", block.event));
                 }
                 let indexed: i64 = block
@@ -225,11 +254,20 @@ impl Database for Postgres {
                     .execute(&self.set_event_block, &[&block.event, &indexed, &finalized])
                     .await
                     .context("execute SET_EVENT_BLOCK")?;
-                if rows != 1 {
-                    return Err(anyhow!(
-                        "query unexpectedly changed {rows} rows instead of 1"
-                    ));
-                }
+                validate_rows(rows)?;
+                let rows = transaction
+                    .execute(&self.set_event_block, &[&"blocks", &indexed, &finalized])
+                    .await
+                    .context("execute SET_EVENT_BLOCK")?;
+                validate_rows(rows)?;
+                let rows = transaction
+                    .execute(
+                        &self.set_event_block,
+                        &[&"transactions", &indexed, &finalized],
+                    )
+                    .await
+                    .context("execute SET_EVENT_BLOCK")?;
+                validate_rows(rows)?;
             }
 
             for log in logs {
@@ -237,7 +275,18 @@ impl Database for Postgres {
                     .await
                     .context(format!("store_event {:?}", log))?;
             }
-
+            // Store blocks
+            for block_time in block_times {
+                Self::store_block(&mut transaction, block_time)
+                    .await
+                    .context(format!("store_block {:?}", block_time))?;
+            }
+            // Store evm transactions
+            for tx in transactions {
+                Self::store_transaction(&mut transaction, tx)
+                    .await
+                    .context(format!("store_transaction {:?}", tx))?;
+            }
             transaction.commit().await.context("commit")
         }
         .boxed()
@@ -264,6 +313,25 @@ impl Database for Postgres {
                         .await
                         .context("execute set_indexed_block")?;
                 }
+
+                // Remove blocks and transactions as well.
+                transaction
+                    .execute(REMOVE_BLOCKS_FROM, &[&block])
+                    .await
+                    .context("execute remove_statement (blocks)")?;
+                transaction
+                    .execute(&self.set_indexed_block, &[&"blocks", &parent_block])
+                    .await
+                    .context("set_indexed_block")?;
+
+                transaction
+                    .execute(REMOVE_TRANSACTIONS_FROM, &[&block])
+                    .await
+                    .context("execute remove_statement (blocks)")?;
+                transaction
+                    .execute(&self.set_indexed_block, &[&"transactions", &parent_block])
+                    .await
+                    .context("set_indexed_block")?;
             }
 
             transaction.commit().await.context("commit")
@@ -395,6 +463,43 @@ impl Postgres {
         Ok(())
     }
 
+    async fn store_block<'a>(
+        transaction: &mut tokio_postgres::Transaction<'a>,
+        block: &database::BlockTime,
+    ) -> Result<()> {
+        let block_number = i64::try_from(block.number).unwrap();
+        let params = [
+            &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
+            &block.timestamp,
+        ];
+        transaction
+            .execute(INSERT_BLOCK, &params)
+            .await
+            .context("execute insert block")?;
+        Ok(())
+    }
+
+    async fn store_transaction<'a>(
+        transaction: &mut tokio_postgres::Transaction<'a>,
+        tx: &database::Transaction,
+    ) -> Result<()> {
+        let block_number = i64::try_from(tx.block_number).unwrap();
+        let index = i64::try_from(tx.index).unwrap();
+
+        let params = [
+            &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
+            &index,
+            &tx.hash.0.into_iter().collect::<Vec<_>>(),
+            &tx.from.0.into_iter().collect::<Vec<_>>(),
+            &tx.to.map(|t| t.0.into_iter().collect::<Vec<_>>()),
+        ];
+        transaction
+            .execute(INSERT_TRANSACTION, &params)
+            .await
+            .context("execute insert transaction")?;
+        Ok(())
+    }
+
     async fn create_table<'a>(
         transaction: &tokio_postgres::Transaction<'a>,
         is_array: bool,
@@ -445,6 +550,35 @@ const PRIMARY_KEY: &str = "block_number, log_index";
 const ARRAY_COLUMN: &str = "array_index BIGINT NOT NULL";
 const PRIMARY_KEY_ARRAY: &str = "block_number, log_index, array_index";
 
+const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
+(
+    number INT8      PRIMARY KEY,
+    time   TIMESTAMP NOT NULL
+);"#;
+
+const INSERT_BLOCK: &str = "INSERT INTO blocks (number, time) \
+                            VALUES ($1, $2) \
+                            ON CONFLICT DO NOTHING;";
+
+const REMOVE_BLOCKS_FROM: &str = "DELETE FROM blocks WHERE number >= $1;";
+
+const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
+(
+    block_number INT8      NOT NULL,
+    index        INT8      NOT NULL,
+    hash         BYTEA     NOT NULL,
+    "from"       BYTEA     NOT NULL,
+    "to"         BYTEA,
+    PRIMARY KEY (block_number, index)
+);
+"#;
+
+const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, index, hash, "from", "to")
+                                    VALUES ($1, $2, $3, $4, $5)
+                                    ON CONFLICT DO NOTHING;"#;
+
+const REMOVE_TRANSACTIONS_FROM: &str = "DELETE FROM transactions WHERE block_number >=$1;";
+
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed BIGINT NOT NULL, finalized \
                                         BIGINT NOT NULL);";
@@ -491,12 +625,13 @@ fn abi_kind_to_sql_type(value: &AbiKind) -> Option<tokio_postgres::types::Type> 
 
 #[cfg(test)]
 mod tests {
-    use solabi::{
-        value::{Int, Uint},
-        I256, U256,
+    use {
+        super::*,
+        solabi::{
+            value::{Int, Uint},
+            I256, U256,
+        },
     };
-
-    use super::*;
 
     fn local_postgres_url() -> String {
         "postgresql://postgres@localhost".to_string()
@@ -506,13 +641,14 @@ mod tests {
         let client = connect(&local_postgres_url()).await.unwrap();
         // https://stackoverflow.com/a/36023359
         let query = r#"
-DO $$ DECLARE
-    r RECORD;
-BEGIN
-    FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) LOOP
-        EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
-    END LOOP;
-END $$;
+            DO $$ DECLARE
+                r RECORD;
+            BEGIN
+                FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = current_schema()) 
+                LOOP
+                    EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
+                END LOOP;
+            END $$;
         "#;
         client.batch_execute(query).await.unwrap();
     }
@@ -523,11 +659,11 @@ END $$;
         clear_database().await;
         let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
         let event = r#"
-event Event (
-    uint256,
-    int256
-)
-"#;
+            event Event (
+                uint256,
+                int256
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         db.prepare_event("event", &event).await.unwrap();
         let log = Log {
@@ -539,7 +675,7 @@ event Event (
             ],
             ..Default::default()
         };
-        db.update(&[], &[log]).await.unwrap();
+        db.update(&[], &[log], &[], &[]).await.unwrap();
     }
 
     #[ignore]
@@ -548,12 +684,12 @@ event Event (
         clear_database().await;
         let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
         let event = r#"
-event Event (
-    bool,
-    bool,
-    string
-)
-"#;
+            event Event (
+                bool,
+                bool,
+                string
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         db.prepare_event("event", &event).await.unwrap();
         let log = Log {
@@ -568,6 +704,6 @@ event Event (
             ],
             ..Default::default()
         };
-        db.update(&[], &[log]).await.unwrap();
+        db.update(&[], &[log], &[], &[]).await.unwrap();
     }
 }

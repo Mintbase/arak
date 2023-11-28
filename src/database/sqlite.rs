@@ -1,9 +1,10 @@
 use {
     crate::database::{
         self,
+        date_util::systemtime_to_string,
         event_to_tables::Table,
         event_visitor::{self, VisitValue},
-        Database, Log,
+        BlockTime, Database, Log,
     },
     anyhow::{anyhow, Context, Result},
     futures::{future::BoxFuture, FutureExt},
@@ -66,10 +67,13 @@ impl Database for Sqlite {
         &'a mut self,
         blocks: &'a [database::EventBlock],
         logs: &'a [database::Log],
+        block_times: &'a [database::BlockTime],
+        transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
             let transaction = self.connection.transaction().context("transaction")?;
-            self.inner.update(&transaction, blocks, logs)?;
+            self.inner
+                .update(&transaction, blocks, logs, block_times, transactions)?;
             transaction.commit().context("commit")
         }
         .boxed()
@@ -94,6 +98,33 @@ const PRIMARY_KEY: &str = "block_number ASC, log_index ASC";
 /// Column for array tables.
 const ARRAY_COLUMN: &str = "array_index INTEGER NOT NULL";
 const PRIMARY_KEY_ARRAY: &str = "block_number ASC, log_index ASC, array_index ASC";
+
+const CREATE_BLOCKS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS blocks
+(
+    number INTEGER PRIMARY KEY,
+    time   TEXT    NOT NULL
+);"#;
+
+const INSERT_BLOCK: &str = "INSERT OR IGNORE INTO blocks (number, time) VALUES (?1, ?2);";
+
+const REMOVE_BLOCKS_FROM: &str = "DELETE FROM blocks WHERE number >=?1;";
+
+const CREATE_TRANSACTIONS_TABLE: &str = r#"CREATE TABLE IF NOT EXISTS transactions
+(
+    block_number INTEGER NOT NULL,
+    "index"      INTEGER NOT NULL,
+    hash         BLOB    NOT NULL,
+    "from"       BLOB    NOT NULL,
+    "to"         BLOB,
+    PRIMARY KEY (block_number, "index")
+);"#; // Can not add a new line here or will get Error:
+      // https://docs.rs/rusqlite/0.30.0/rusqlite/enum.Error.html#variant.MultipleStatement
+
+const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, "index", hash, "from", "to")
+                                    VALUES (?1, ?2, ?3, ?4, ?5)
+                                    ON CONFLICT DO NOTHING;"#;
+
+const REMOVE_TRANSACTIONS_FROM: &str = "DELETE FROM transactions WHERE block_number >=?1;";
 
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed INTEGER NOT NULL, finalized \
@@ -167,6 +198,23 @@ impl SqliteInner {
             .prepare_cached(TABLE_EXISTS)
             .context("prepare table_exists")?;
 
+        connection
+            .execute(CREATE_BLOCKS_TABLE, [])
+            .context("create blocks table")?;
+        connection
+            .execute(CREATE_TRANSACTIONS_TABLE, [])
+            .context("create transactions table")?;
+
+        let mut new_event_block = connection
+            .prepare_cached(NEW_EVENT_BLOCK)
+            .context("prepare new_event_block")?;
+        new_event_block
+            .execute((&"blocks",))
+            .context("add blocks to _event_blocks")?;
+        new_event_block
+            .execute((&"transactions",))
+            .context("add transactions to _event_blocks")?;
+
         Ok(Self {
             events: Default::default(),
         })
@@ -205,7 +253,7 @@ impl SqliteInner {
             .prepare_cached(SET_EVENT_BLOCK)
             .context("prepare_cached")?;
         for block in blocks {
-            if !self.events.contains_key(block.event) {
+            if block.is_event() && !self.events.contains_key(block.event) {
                 return Err(anyhow!("event {} wasn't prepared", block.event));
             }
             let indexed: i64 = block
@@ -347,7 +395,7 @@ impl SqliteInner {
 
     fn store_event<'a>(
         &self,
-        con: &Transaction,
+        conn: &Transaction,
         Log {
             event,
             block_number,
@@ -439,9 +487,9 @@ impl SqliteInner {
         for (statement, (array_element_count, values)) in
             event.insert_statements.iter().zip(sql_values)
         {
-            let mut statement_ = con
+            let mut statement_ = conn
                 .prepare_cached(&statement.sql)
-                .context("prepare_cached")?;
+                .context("prepare_cached event")?;
             let is_array = array_element_count.is_some();
             let array_element_count = array_element_count.unwrap_or(1);
             assert_eq!(statement.fields * array_element_count, values.len());
@@ -458,10 +506,41 @@ impl SqliteInner {
                         .chain(array_index.as_ref())
                         .chain(row),
                 );
-                statement_.insert(params).context("insert")?;
+                statement_.insert(params).context("insert event")?;
             }
         }
 
+        Ok(())
+    }
+
+    fn store_block(&self, conn: &Transaction, block_time: &BlockTime) -> Result<()> {
+        let number = ToSqlOutput::Owned(SqlValue::Integer((block_time.number).try_into().unwrap()));
+        let time = ToSqlOutput::Owned(SqlValue::Text(systemtime_to_string(
+            block_time.timestamp,
+            None,
+        )));
+        conn.prepare_cached(INSERT_BLOCK)
+            .context("prepare_cached block insert")?
+            .execute([number, time])
+            .context("insert block")?;
+        Ok(())
+    }
+
+    fn store_transaction(&self, conn: &Transaction, tx: &database::Transaction) -> Result<()> {
+        let block_number =
+            ToSqlOutput::Owned(SqlValue::Integer((tx.block_number).try_into().unwrap()));
+        let index = ToSqlOutput::Owned(SqlValue::Integer((tx.index).try_into().unwrap()));
+        let hash = ToSqlOutput::Owned(SqlValue::Blob(tx.hash.to_vec()));
+        let from = ToSqlOutput::Owned(SqlValue::Blob(tx.from.to_vec()));
+        let to = ToSqlOutput::Owned(match tx.to {
+            Some(val) => SqlValue::Blob(val.to_vec()),
+            None => SqlValue::Null,
+        });
+
+        conn.prepare_cached(INSERT_TRANSACTION)
+            .context("prepare_cached transaction insert")?
+            .execute([block_number, index, hash, from, to])
+            .context("insert transaction")?;
         Ok(())
     }
 
@@ -470,17 +549,26 @@ impl SqliteInner {
         con: &Transaction,
         blocks: &[database::EventBlock],
         logs: &[database::Log],
+        block_times: &[database::BlockTime],
+        transactions: &[database::Transaction],
     ) -> Result<()> {
         self.set_event_blocks(con, blocks)
             .context("set_event_blocks")?;
         for log in logs {
             self.store_event(con, log).context("store_event")?;
         }
+        for block_time in block_times {
+            self.store_block(con, block_time).context("store_block")?;
+        }
+        for tx in transactions {
+            self.store_transaction(con, tx)
+                .context("store_transaction")?;
+        }
         Ok(())
     }
 
     fn remove(&self, connection: &Connection, uncles: &[database::Uncle]) -> Result<()> {
-        let mut set_indexed_block = connection
+        let mut set_indexed_block: rusqlite::CachedStatement<'_> = connection
             .prepare_cached(SET_INDEXED_BLOCK)
             .context("prepare_cached set_indexed_block")?;
         for uncle in uncles {
@@ -501,6 +589,19 @@ impl SqliteInner {
                     .execute((uncle.event, parent_block))
                     .context("execute set_indexed_block")?;
             }
+
+            // Remove blocks and transactions as well.
+            let mut remove_statement = connection.prepare_cached(REMOVE_BLOCKS_FROM)?;
+            remove_statement
+                .execute((block,))
+                .context("execute remove_statement (blocks)")?;
+            set_indexed_block.execute(("blocks", parent_block))?;
+
+            let mut remove_statement = connection.prepare_cached(REMOVE_TRANSACTIONS_FROM)?;
+            remove_statement
+                .execute((block,))
+                .context("execute remove_statement (transactions)")?;
+            set_indexed_block.execute(("transactions", parent_block))?;
         }
         Ok(())
     }
@@ -525,10 +626,12 @@ mod tests {
     use {
         super::*,
         solabi::{
+            digest,
             ethprim::Address,
             function::{ExternalFunction, Selector},
             value::{Array, FixedBytes, Int, Uint},
         },
+        std::time::SystemTime,
     };
 
     #[test]
@@ -553,17 +656,17 @@ mod tests {
     async fn full_leaf_types() {
         let mut sqlite = Sqlite::new_for_test();
         let event = r#"
-event Event (
-    int256,
-    uint256,
-    address,
-    bool,
-    bytes1,
-    function,
-    bytes,
-    string
-)
-"#;
+            event Event (
+                int256,
+                uint256,
+                address,
+                bool,
+                bytes1,
+                function,
+                bytes,
+                string
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         sqlite.prepare_event("event", &event).await.unwrap();
 
@@ -591,21 +694,36 @@ event Event (
                     address: Address([4; 20]),
                     fields,
                 }],
+                &[database::BlockTime {
+                    number: 1,
+                    timestamp: SystemTime::UNIX_EPOCH,
+                }],
+                &[database::Transaction {
+                    block_number: 1,
+                    index: 2,
+                    hash: digest!(
+                        "0x0000000000000000000000000101010101010101010101010101010101010101"
+                    ),
+                    from: Address([4; 20]),
+                    to: Some(Address([4; 20])),
+                }],
             )
             .await
             .unwrap();
 
         print_table(&sqlite.connection, "event");
+        print_table(&sqlite.connection, "blocks");
+        print_table(&sqlite.connection, "transactions");
     }
 
     #[tokio::test]
     async fn with_array() {
         let mut sqlite = Sqlite::new_for_test();
         let event = r#"
-event Event (
-    (bool, string)[]
-)
-"#;
+            event Event (
+                (bool, string)[]
+            )
+        "#;
         let event = EventDescriptor::parse_declaration(event).unwrap();
         sqlite.prepare_event("event", &event).await.unwrap();
 
@@ -627,7 +745,7 @@ event Event (
             )],
             ..Default::default()
         };
-        sqlite.update(&[], &[log]).await.unwrap();
+        sqlite.update(&[], &[log], &[], &[]).await.unwrap();
 
         let log = Log {
             event: "event",
@@ -637,7 +755,7 @@ event Event (
             )],
             ..Default::default()
         };
-        sqlite.update(&[], &[log]).await.unwrap();
+        sqlite.update(&[], &[log], &[], &[]).await.unwrap();
 
         print_table(&sqlite.connection, "event");
         print_table(&sqlite.connection, "event_array_0");
@@ -658,10 +776,20 @@ event Event (
                 finalized: 3,
             },
         };
-        sqlite.update(&[blocks], &[]).await.unwrap();
+        sqlite.update(&[blocks], &[], &[], &[]).await.unwrap();
         let result = sqlite.event_block("event").await.unwrap();
         assert_eq!(result.indexed, 2);
         assert_eq!(result.finalized, 3);
+    }
+
+    fn count_rows(db: &Sqlite, table_name: &str) -> i64 {
+        let count: i64 = db
+            .connection
+            .query_row(&format!("SELECT COUNT(*) FROM {}", table_name), (), |row| {
+                row.get(0)
+            })
+            .unwrap();
+        count
     }
 
     #[tokio::test]
@@ -696,6 +824,36 @@ event Event (
                         ..Default::default()
                     },
                 ],
+                &[
+                    BlockTime {
+                        number: 5,
+                        timestamp: SystemTime::UNIX_EPOCH,
+                    },
+                    BlockTime {
+                        number: 6,
+                        timestamp: SystemTime::UNIX_EPOCH,
+                    },
+                ],
+                &[
+                    database::Transaction {
+                        block_number: 5,
+                        index: 2,
+                        hash: digest!(
+                            "0x0000000000000000000000000000000000000000000000000000000000000111"
+                        ),
+                        from: Address([4; 20]),
+                        to: Some(Address([4; 20])),
+                    },
+                    database::Transaction {
+                        block_number: 6,
+                        index: 2,
+                        hash: digest!(
+                            "0x0000000000000000000000000000000000000000000000000000000000000222"
+                        ),
+                        from: Address([4; 20]),
+                        to: Some(Address([4; 20])),
+                    },
+                ],
             )
             .await
             .unwrap();
@@ -708,6 +866,8 @@ event Event (
             count
         };
         assert_eq!(rows(&sqlite), 4);
+        assert_eq!(count_rows(&sqlite, "transactions"), 2);
+        assert_eq!(count_rows(&sqlite, "blocks"), 2);
 
         sqlite
             .remove(&[database::Uncle {
@@ -717,6 +877,8 @@ event Event (
             .await
             .unwrap();
         assert_eq!(rows(&sqlite), 3);
+        assert_eq!(count_rows(&sqlite, "transactions"), 1);
+        assert_eq!(count_rows(&sqlite, "blocks"), 1);
 
         sqlite
             .remove(&[database::Uncle {
@@ -726,7 +888,8 @@ event Event (
             .await
             .unwrap();
         assert_eq!(rows(&sqlite), 3);
-
+        assert_eq!(count_rows(&sqlite, "transactions"), 0);
+        assert_eq!(count_rows(&sqlite, "blocks"), 0);
         sqlite
             .remove(&[database::Uncle {
                 event: "event",

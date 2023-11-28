@@ -8,8 +8,12 @@ license = "GPL-3.0-or-later"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-ethrpc = { version = "0.0.8", features = ["http"] }
 rusqlite = { version = "0.30.0", features = ["extra_check"] }
+# Waiting on https://github.com/nlordell/ethrpc-rs/pull/9
+#ethrpc = { version = "0.0.8", features = ["http"] }
+ethrpc = { git = "https://github.com/bh2smith/ethrpc-rs", rev = "04ba07064fcb9ac8cf71e02d2c168819499b3616", features = [
+    "http",
+] }
 serde = { version = "1", features = ["derive"] }
 solabi = "0.2.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
@@ -18,9 +22,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = { version = "2", features = ["serde"] }
 futures = "0.3"
-tokio-postgres = "0.7"
+tokio-postgres = { version = "0.7", features = ["with-time-0_3"] }
 pg_bigdecimal = "0.1.5"
 dotenv = "0.15.0"
+chrono = { version = "0.4.31", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 hex-literal = "0.4"

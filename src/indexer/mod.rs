@@ -12,9 +12,13 @@ use {
     anyhow::{Context, Result},
     ethrpc::{
         eth,
-        types::{Block, BlockTag, Hydrated, LogBlocks},
+        types::{Block, BlockSpec, BlockTag, BlockTransactions, Hydrated, LogBlocks},
     },
-    std::{cmp, time::Duration},
+    solabi::U256,
+    std::{
+        cmp,
+        time::{Duration, SystemTime},
+    },
     tokio::time,
 };
 
@@ -77,6 +81,9 @@ where
                 .prepare_event(adapter.name(), adapter.signature())
                 .await?;
         }
+        // TODO(bh2smith) - should probably also prepare event for block and transaction.
+        //  this might make the whole flow easier if it were handled among the others.
+        //  but it doesn't align so well with the fact that blocks table has field number instead of block_number.
 
         let mut unfinalized = Vec::new();
         for adapter in self.adapters.iter() {
@@ -123,6 +130,19 @@ where
             let to = cmp::min(finalized.number.as_u64(), earliest + config.page_size - 1);
             tracing::debug!(from =% earliest, %to, "indexing blocks");
 
+            // Fetch Blocks and Transaction Data
+            // TODO(bh2smith) - When a new event is introduced with start earlier than previously indexed events,
+            //  we still need to pick up the block-data that we don't already have.
+            //  However, once we have caught up, it would be wasteful to continue querying it.
+            let block_queries: Vec<(_, _)> = (earliest..to)
+                .map(|block: u64| {
+                    (
+                        eth::GetBlockByNumber,
+                        (BlockSpec::Number(U256::from(block)), Hydrated::Yes),
+                    )
+                })
+                .collect();
+            let block_tx_data = self.eth.batch(block_queries).await?;
             // Prepare `eth_getLogs` queries, noting the indices of their
             // corresponding adapters for decoding responses.
             let (adapters, queries) = self
@@ -143,12 +163,15 @@ where
                     )
                 })
                 .unzip::<_, _, Vec<_>, Vec<_>>();
-            let results = self.eth.batch(queries).await?;
-
+            let results = if !queries.is_empty() {
+                self.eth.batch(queries).await?
+            } else {
+                Vec::new()
+            };
             // Compute the database updates required:
             // - Update latest indexed blocks for the events that were queried
             // - Add the logs to the DB.
-            let blocks = adapters
+            let mut blocks = adapters
                 .iter()
                 .copied()
                 .map(|adapter| database::EventBlock {
@@ -165,7 +188,27 @@ where
                 .flat_map(|(adapter, logs)| database_logs(adapter, logs))
                 .collect::<Vec<_>>();
 
-            self.database.update(&blocks, &logs).await?;
+            // Add blocks and transactions.
+            blocks.extend([
+                database::EventBlock {
+                    event: "blocks",
+                    block: database::Block {
+                        indexed: to,
+                        finalized: finalized.number.as_u64(),
+                    },
+                },
+                database::EventBlock {
+                    event: "transactions",
+                    block: database::Block {
+                        indexed: to,
+                        finalized: finalized.number.as_u64(),
+                    },
+                },
+            ]);
+            let (block_times, transactions) = database_block_data(block_tx_data);
+            self.database
+                .update(&blocks, &logs, &block_times, &transactions)
+                .await?;
         }
     }
 
@@ -177,7 +220,7 @@ where
 
         let next = match self
             .eth
-            .call(eth::GetBlockByNumber, (chain.next().into(), Hydrated::No))
+            .call(eth::GetBlockByNumber, (chain.next().into(), Hydrated::Yes))
             .await?
         {
             Some(value) => value,
@@ -258,21 +301,75 @@ where
             .flat_map(|(adapter, logs)| database_logs(adapter, logs))
             .collect::<Vec<_>>();
 
-        self.database.update(&blocks, &logs).await?;
+        let (block_times, transactions) = database_block_data(vec![Some(next)]);
+        self.database
+            .update(&blocks, &logs, &block_times, &transactions)
+            .await?;
         Ok(true)
     }
 
     /// Computes the blocks to start initializing from for each adapter.
     async fn init_blocks(&mut self) -> Result<Vec<u64>> {
         let mut blocks = Vec::new();
+        let mut min_index_block = u64::MAX;
         for adapter in self.adapters.iter() {
+            // Compute earliest block (as min of all event adapters)
+            // to start indexing blocks and transactions
+            let adapter_start = adapter.start();
+            if adapter_start < min_index_block {
+                min_index_block = adapter_start;
+            }
             blocks.push(cmp::max(
-                adapter.start(),
+                adapter_start,
                 self.database.event_block(adapter.name()).await?.indexed + 1,
             ));
         }
+        // These are non-adapter tables.
+        blocks.push(cmp::max(
+            min_index_block,
+            self.database.event_block("blocks").await?.indexed + 1,
+        ));
+        blocks.push(cmp::max(
+            min_index_block,
+            self.database.event_block("transactions").await?.indexed + 1,
+        ));
         Ok(blocks)
     }
+}
+
+fn database_block_data(
+    block_data: Vec<Option<Block>>,
+) -> (Vec<database::BlockTime>, Vec<database::Transaction>) {
+    let mut blocks = vec![];
+    let mut transactions = vec![];
+
+    for block in block_data.into_iter().flatten() {
+        let number = block.number.as_u64();
+        blocks.push(database::BlockTime {
+            number,
+            timestamp: timestamp_to_systemtime(block.timestamp.as_u64()),
+        });
+
+        match block.transactions {
+            BlockTransactions::Full(txs) => {
+                for tx in txs {
+                    transactions.push(database::Transaction {
+                        block_number: number,
+                        index: tx.transaction_index().as_u64(),
+                        hash: tx.hash(),
+                        from: tx.from(),
+                        to: tx.to(),
+                    });
+                }
+            }
+            // This happens when
+            // - a block has no transactions or
+            // - requesting Hydrated::No blocks (i.e. when not indexing tx data)
+            BlockTransactions::Hash(_) => (),
+        };
+    }
+
+    (blocks, transactions)
 }
 
 fn database_logs(
@@ -307,4 +404,25 @@ fn database_logs(
                 fields,
             })
         })
+}
+
+pub fn timestamp_to_systemtime(timestamp: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn date_conversions() {
+        // Time Zero
+        assert_eq!(timestamp_to_systemtime(0), SystemTime::UNIX_EPOCH);
+
+        // First Ethereum Block: https://etherscan.io/block/1
+        assert_eq!(
+            timestamp_to_systemtime(1438262788),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(1438262788)
+        );
+    }
 }
