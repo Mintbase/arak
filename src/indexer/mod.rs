@@ -134,7 +134,7 @@ where
             // TODO(bh2smith) - When a new event is introduced with start earlier than previously indexed events,
             //  we still need to pick up the block-data that we don't already have.
             //  However, once we have caught up, it would be wasteful to continue querying it.
-            let block_queries: Vec<(_, _)> = (earliest..to)
+            let block_queries: Vec<(_, _)> = (earliest..to + 1)
                 .map(|block: u64| {
                     (
                         eth::GetBlockByNumber,
