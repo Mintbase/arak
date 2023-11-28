@@ -7,8 +7,8 @@ data:
   arak.toml: |
 
     [indexer]
-    page-size = 2000
-    poll-interval = 0.1
+    page-size = 100
+    poll-interval = 10
 
     ## ERC721: https://eips.ethereum.org/EIPS/eip-721#specification
     [[event]]
@@ -53,4 +53,4 @@ data:
     #name = "indexed_approval_for_all"
     #start = 0
     #contract = "*"
-    #signature = "event ApprovalForAll (index_topic_1 address _owner, index_topic_2 address _operator, index_topic_3 bool _approved)"
+    #signature = "event ApprovalForAll(address indexed owner, address indexed operator, bool indexed approved)"
