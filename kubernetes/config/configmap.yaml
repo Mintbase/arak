@@ -7,45 +7,45 @@ data:
   arak.toml: |
 
     [indexer]
-    page-size = 100
+    page-size = 500
     poll-interval = 10
 
     ## ERC721: https://eips.ethereum.org/EIPS/eip-721#specification
     [[event]]
     name = "erc721_transfer"
-    start = 0
+    start = 937820
     contract = "*"
     signature = "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"
 
     [[event]]
     name = "erc721_approval"
-    start = 0
+    start = 1176542
     contract = "*"
     signature = "event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId)"
 
     ## ERC1155: https://eips.ethereum.org/EIPS/eip-1155#specification
     [[event]]
     name = "erc1155_transfer_single"
-    start = 0
+    start = 6930509
     contract = "*"
     signature = "event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value)"
 
     [[event]]
     name = "erc1155_transfer_batch"
-    start = 0
+    start = 7409271
     contract = "*"
     signature = "event TransferBatch(address indexed operator, address indexed from, address indexed to, uint256[] ids, uint256[] values)"
 
     [[event]]
     name = "erc1155_uri"
-    start = 0
+    start = 6938760
     contract = "*"
     signature = "event URI(string value, uint256 indexed id)"
 
     ### Overlapping Events
     [[event]]
     name = "approval_for_all"
-    start = 0
+    start = 5220768
     contract = "*"
     signature = "event ApprovalForAll(address indexed owner, address indexed operator, bool approved)"
 
