@@ -116,6 +116,15 @@ impl Postgres {
     }
 }
 
+fn validate_rows(rows: u64) -> Result<()> {
+    if rows != 1 {
+        return Err(anyhow!(
+            "query unexpectedly changed {rows} rows instead of 1"
+        ));
+    }
+    Ok(())
+}
+
 impl Database for Postgres {
     fn prepare_event<'a>(
         &'a mut self,
@@ -245,11 +254,20 @@ impl Database for Postgres {
                     .execute(&self.set_event_block, &[&block.event, &indexed, &finalized])
                     .await
                     .context("execute SET_EVENT_BLOCK")?;
-                if rows != 1 {
-                    return Err(anyhow!(
-                        "query unexpectedly changed {rows} rows instead of 1"
-                    ));
-                }
+                validate_rows(rows)?;
+                let rows = transaction
+                    .execute(&self.set_event_block, &[&"blocks", &indexed, &finalized])
+                    .await
+                    .context("execute SET_EVENT_BLOCK")?;
+                validate_rows(rows)?;
+                let rows = transaction
+                    .execute(
+                        &self.set_event_block,
+                        &[&"transactions", &indexed, &finalized],
+                    )
+                    .await
+                    .context("execute SET_EVENT_BLOCK")?;
+                validate_rows(rows)?;
             }
 
             for log in logs {

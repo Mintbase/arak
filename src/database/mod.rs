@@ -33,7 +33,7 @@ pub struct EventBlock<'a> {
 
 impl<'a> EventBlock<'a> {
     pub fn is_event(&self) -> bool {
-        // TODO - note that this implies blocks and transactions are "reserved" keywords
+        // TODO(bh2smith) - note that this implies blocks and transactions are "reserved" keywords
         //  So we should not allow events to have these names. OR this can be done differently.
         //  Maybe we should use _blocks and _transactions!
         !["blocks", "transactions"].contains(&self.event)

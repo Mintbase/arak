@@ -81,7 +81,7 @@ where
                 .prepare_event(adapter.name(), adapter.signature())
                 .await?;
         }
-        // TODO - should probably also prepare event for block and transaction.
+        // TODO(bh2smith) - should probably also prepare event for block and transaction.
         //  this might make the whole flow easier if it were handled among the others.
         //  but it doesn't align so well with the fact that blocks table has field number instead of block_number.
 
@@ -130,8 +130,10 @@ where
             let to = cmp::min(finalized.number.as_u64(), earliest + config.page_size - 1);
             tracing::debug!(from =% earliest, %to, "indexing blocks");
 
-            // First fetch Blocks and Transaction Data
-            // TODO - ensure earliest and to are aligned with _event_blocks table.
+            // Fetch Blocks and Transaction Data
+            // TODO(bh2smith) - When a new event is introduced with start earlier than previously indexed events,
+            //  we still need to pick up the block-data that we don't already have.
+            //  However, once we have caught up, it would be wasteful to continue querying it.
             let block_queries: Vec<(_, _)> = (earliest..to)
                 .map(|block: u64| {
                     (
@@ -348,23 +350,23 @@ fn database_block_data(
             timestamp: timestamp_to_systemtime(block.timestamp.as_u64()),
         });
 
-        let txs = match block.transactions {
-            BlockTransactions::Full(txs) => txs,
-            BlockTransactions::Hash(hashes) => match hashes.len() {
-                // This happens when a block has no transactions
-                0 => vec![],
-                _ => unreachable!("expected Full for Hydrated block={}", number),
-            },
+        match block.transactions {
+            BlockTransactions::Full(txs) => {
+                for tx in txs {
+                    transactions.push(database::Transaction {
+                        block_number: number,
+                        index: tx.transaction_index().as_u64(),
+                        hash: tx.hash(),
+                        from: tx.from(),
+                        to: tx.to(),
+                    });
+                }
+            }
+            // This happens when
+            // - a block has no transactions or
+            // - requesting Hydrated::No blocks (i.e. when not indexing tx data)
+            BlockTransactions::Hash(_) => (),
         };
-        for tx in txs {
-            transactions.push(database::Transaction {
-                block_number: number,
-                index: tx.transaction_index().as_u64(),
-                hash: tx.hash(),
-                from: tx.from(),
-                to: tx.to(),
-            });
-        }
     }
 
     (blocks, transactions)
