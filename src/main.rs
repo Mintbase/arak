@@ -35,7 +35,6 @@ async fn main() -> Result<()> {
     let (config, root) = Config::load(&args.config, args.node_url, args.db_string)
         .context("failed to load configuration")?;
     env::set_current_dir(root)?;
-
     match &config.database {
         config::Database::Sqlite { connection } => {
             run_indexer(&config, database::Sqlite::open(connection)?).await?;
