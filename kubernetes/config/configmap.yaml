@@ -7,8 +7,8 @@ data:
   arak.toml: |
 
     [indexer]
-    page-size = 500
-    poll-interval = 10
+    page-size = 200
+    poll-interval = 1
 
     ## ERC721: https://eips.ethereum.org/EIPS/eip-721#specification
     [[event]]

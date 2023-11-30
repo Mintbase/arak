@@ -90,7 +90,10 @@ fn manual_override(
     let mut toml_values = toml_string.parse::<Table>()?;
     // Manual overrides from env vars.
     if let Some(ethrpc) = node_url {
-        tracing::info!("using env NODE_URL");
+        tracing::info!(
+            "using env NODE_URL with domain {:?}",
+            Url::parse(&ethrpc).expect("invalid ethrpc").domain()
+        );
         toml_values.insert("ethrpc".to_string(), Value::String(ethrpc));
     }
     if let Some(connection) = db_url {
