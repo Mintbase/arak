@@ -72,7 +72,6 @@ impl Config {
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
         let toml = manual_override(fs::read_to_string(path)?, node_url, db_url)?;
-        println!("TOML {}", toml);
         let config: Config = toml::from_str(&toml.to_string())?;
 
         let root = fs::canonicalize(path)?
@@ -225,6 +224,7 @@ mod tests {
         ethrpc = "old rpc"
         [database.postgres]
         connection = "old db"
+        schema = "anything"
         "#
         .to_string();
 
@@ -241,6 +241,7 @@ mod tests {
             ethrpc = "new rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -254,6 +255,7 @@ mod tests {
             ethrpc = "new rpc"
             [database.postgres]
             connection = "old db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -267,6 +269,7 @@ mod tests {
             ethrpc = "old rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -274,11 +277,19 @@ mod tests {
 
         // toml without node or db provided
         assert_eq!(
-            manual_override("".to_string(), node_url, db_url).unwrap(),
+            manual_override(
+                r#"[database.postgres]
+            schema = "anything""#
+                    .to_string(),
+                node_url,
+                db_url
+            )
+            .unwrap(),
             r#"
             ethrpc = "new rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
