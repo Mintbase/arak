@@ -88,6 +88,7 @@ fn manual_override(
     db_url: Option<String>,
 ) -> Result<Table> {
     let mut toml_values = toml_string.parse::<Table>()?;
+    println!("TOML: {toml_values}");
     // Manual overrides from env vars.
     if let Some(ethrpc) = node_url {
         tracing::info!(
@@ -104,6 +105,15 @@ fn manual_override(
         if connection.contains("file:") {
             db_type.insert("sqlite".to_string(), Value::Table(db_data))
         } else {
+            // In the event that postgres is specified,
+            // schema is expected to be part of the config.
+            db_data.insert(
+                "schema".to_string(),
+                toml_values["database"]["postgres"]
+                    .get("schema")
+                    .expect("schema required for postgres connection")
+                    .clone(),
+            );
             db_type.insert("postgres".to_string(), Value::Table(db_data))
         };
         toml_values.insert("database".to_string(), Value::Table(db_type));
@@ -214,6 +224,7 @@ mod tests {
         ethrpc = "old rpc"
         [database.postgres]
         connection = "old db"
+        schema = "anything"
         "#
         .to_string();
 
@@ -230,6 +241,7 @@ mod tests {
             ethrpc = "new rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -243,6 +255,7 @@ mod tests {
             ethrpc = "new rpc"
             [database.postgres]
             connection = "old db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -256,6 +269,7 @@ mod tests {
             ethrpc = "old rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
@@ -263,11 +277,19 @@ mod tests {
 
         // toml without node or db provided
         assert_eq!(
-            manual_override("".to_string(), node_url, db_url).unwrap(),
+            manual_override(
+                r#"[database.postgres]
+            schema = "anything""#
+                    .to_string(),
+                node_url,
+                db_url
+            )
+            .unwrap(),
             r#"
             ethrpc = "new rpc"
             [database.postgres]
             connection = "new db"
+            schema = "anything"
             "#
             .parse::<Table>()
             .unwrap()
