@@ -72,6 +72,7 @@ impl Config {
         db_url: Option<String>,
     ) -> Result<(Self, PathBuf)> {
         let toml = manual_override(fs::read_to_string(path)?, node_url, db_url)?;
+        println!("TOML {}", toml);
         let config: Config = toml::from_str(&toml.to_string())?;
 
         let root = fs::canonicalize(path)?
@@ -88,6 +89,7 @@ fn manual_override(
     db_url: Option<String>,
 ) -> Result<Table> {
     let mut toml_values = toml_string.parse::<Table>()?;
+    println!("TOML: {toml_values}");
     // Manual overrides from env vars.
     if let Some(ethrpc) = node_url {
         tracing::info!(
@@ -104,6 +106,15 @@ fn manual_override(
         if connection.contains("file:") {
             db_type.insert("sqlite".to_string(), Value::Table(db_data))
         } else {
+            // In the event that postgres is specified,
+            // schema is expected to be part of the config.
+            db_data.insert(
+                "schema".to_string(),
+                toml_values["database"]["postgres"]
+                    .get("schema")
+                    .expect("schema required for postgres connection")
+                    .clone(),
+            );
             db_type.insert("postgres".to_string(), Value::Table(db_data))
         };
         toml_values.insert("database".to_string(), Value::Table(db_type));
