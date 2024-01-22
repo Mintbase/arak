@@ -5,6 +5,10 @@ ethrpc = "http://localhost:8545"
 [database.sqlite]
 connection = "file:arak.db"
 
+#[database.postgres]
+#connection = "postgresql://postgres:postgres@localhost:5432/arak"
+#schema = "local"
+
 [[event]]
 name = "cowprotocol_settlements"
 start = 12593265

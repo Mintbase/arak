@@ -61,9 +61,18 @@ async fn connect(params: &str) -> Result<tokio_postgres::Client> {
 }
 
 impl Postgres {
-    pub async fn connect(params: &str) -> Result<Self> {
-        tracing::debug!("opening postgres database");
-        let client = connect(params).await.context("connect")?;
+    pub async fn connect(connection_str: &str, schema: &str) -> Result<Self> {
+        tracing::debug!("opening postgres database with schema {schema}");
+        let client = connect(connection_str).await.context("connect")?;
+        // create and set db schema
+        client
+            .execute(&format!("CREATE SCHEMA IF NOT EXISTS {schema};"), &[])
+            .await
+            .context("create schema")?;
+        client
+            .execute(&format!("SET search_path TO {schema};"), &[])
+            .await
+            .context("set schema")?;
         client
             .execute(CREATE_EVENT_BLOCK_TABLE, &[])
             .await
@@ -578,7 +587,6 @@ const INSERT_TRANSACTION: &str = r#"INSERT INTO transactions (block_number, inde
                                     ON CONFLICT DO NOTHING;"#;
 
 const REMOVE_TRANSACTIONS_FROM: &str = "DELETE FROM transactions WHERE block_number >=$1;";
-
 const CREATE_EVENT_BLOCK_TABLE: &str = "CREATE TABLE IF NOT EXISTS _event_block(event TEXT \
                                         PRIMARY KEY NOT NULL, indexed BIGINT NOT NULL, finalized \
                                         BIGINT NOT NULL);";
@@ -633,12 +641,22 @@ mod tests {
         },
     };
 
-    fn local_postgres_url() -> String {
-        "postgresql://postgres@localhost".to_string()
+    fn test_setup() -> (String, String) {
+        (
+            "postgresql://postgres@localhost".to_string(),
+            "local".to_string(),
+        )
+    }
+
+    async fn empty_db() -> Postgres {
+        clear_database().await;
+        let (db_url, schema) = test_setup();
+        Postgres::connect(&db_url, &schema).await.unwrap()
     }
 
     async fn clear_database() {
-        let client = connect(&local_postgres_url()).await.unwrap();
+        let (db_url, _) = test_setup();
+        let client = connect(&db_url).await.unwrap();
         // https://stackoverflow.com/a/36023359
         let query = r#"
             DO $$ DECLARE
@@ -656,8 +674,7 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn large_number() {
-        clear_database().await;
-        let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
+        let mut db = empty_db().await;
         let event = r#"
             event Event (
                 uint256,
@@ -681,8 +698,7 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn boolean_and_text_fields() {
-        clear_database().await;
-        let mut db = Postgres::connect(&local_postgres_url()).await.unwrap();
+        let mut db = empty_db().await;
         let event = r#"
             event Event (
                 bool,

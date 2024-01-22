@@ -31,7 +31,7 @@ pub struct Config {
 #[serde(rename_all = "kebab-case")]
 pub enum Database {
     Sqlite { connection: String },
-    Postgres { connection: String },
+    Postgres { connection: String, schema: String },
 }
 
 #[derive(Debug, Deserialize)]

@@ -39,8 +39,12 @@ async fn main() -> Result<()> {
         config::Database::Sqlite { connection } => {
             run_indexer(&config, database::Sqlite::open(connection)?).await?;
         }
-        config::Database::Postgres { connection } => {
-            run_indexer(&config, database::Postgres::connect(connection).await?).await?;
+        config::Database::Postgres { connection, schema } => {
+            run_indexer(
+                &config,
+                database::Postgres::connect(connection, schema).await?,
+            )
+            .await?;
         }
     }
 
