@@ -5,6 +5,9 @@ metadata:
   namespace: {{ .Namespace }}
 data:
   arak.toml: |
+    
+    [database.postgres]
+    schema = "mainnet"
 
     [indexer]
     page-size = 200
