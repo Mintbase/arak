@@ -88,7 +88,6 @@ fn manual_override(
     db_url: Option<String>,
 ) -> Result<Table> {
     let mut toml_values = toml_string.parse::<Table>()?;
-    println!("TOML: {toml_values}");
     // Manual overrides from env vars.
     if let Some(ethrpc) = node_url {
         tracing::info!(
