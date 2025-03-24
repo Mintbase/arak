@@ -1,3 +1,4 @@
+use crate::database::common::{check_descriptor, event_exists_with_same_signature, push_sql_value, PreparedEvent};
 use {
     crate::database::{
         self,
@@ -66,8 +67,8 @@ impl Database for Sqlite {
     fn update<'a>(
         &'a mut self,
         blocks: &'a [database::EventBlock],
-        logs: &'a [database::Log],
-        block_times: &'a [database::BlockTime],
+        logs: &'a [Log],
+        block_times: &'a [BlockTime],
         transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
         async move {
@@ -146,24 +147,7 @@ struct SqliteInner {
     ///
     /// The key is the `name` argument when the event was passed into
     /// `prepare_event`.
-    events: HashMap<String, PreparedEvent>,
-}
-
-/// An event is represented in the database in several tables.
-///
-/// All tables have some columns that are unrelated to the event's fields. See
-/// `FIXED_COLUMNS`. The first table contains all fields that exist once per
-/// event which means they do not show up in arrays. The other tables contain
-/// fields that are part of arrays. Those tables additionally have the column
-/// `ARRAY_COLUMN`.
-///
-/// The order of tables and fields is given by the `event_visitor` module.
-struct PreparedEvent {
-    descriptor: EventDescriptor,
-    insert_statements: Vec<InsertStatement>,
-    /// Prepared statements for removing rows starting at some block number.
-    /// Every statement takes a block number as parameter.
-    remove_statements: Vec<String>,
+    events: HashMap<String, PreparedEvent<InsertStatement, String>>,
 }
 
 /// Parameters:
@@ -284,21 +268,7 @@ impl SqliteInner {
         name: &str,
         event: &EventDescriptor,
     ) -> Result<()> {
-        // TODO:
-        // - Check that either no table exists or all tables exist and with the right
-        //   types.
-        // - Maybe have `CHECK` clauses to enforce things like address and integers
-        //   having expected length.
-        // - Maybe store serialized event descriptor in the database so we can load and
-        //   check it.
-
-        if let Some(existing) = self.events.get(name) {
-            if event != &existing.descriptor {
-                return Err(anyhow!(
-                    "event {} (database name {name}) already exists with different signature",
-                    event.name
-                ));
-            }
+        if event_exists_with_same_signature(&self.events, name, event)? {
             return Ok(());
         }
 
@@ -414,11 +384,7 @@ impl SqliteInner {
                 "event value has {len} fields but should have {expected_len}"
             ));
         }
-        for (i, (value, kind)) in fields.iter().zip(&event.descriptor.inputs).enumerate() {
-            if value.kind() != kind.field.kind {
-                return Err(anyhow!("event field {i} doesn't match event descriptor"));
-            }
-        }
+        check_descriptor(fields, event)?;
 
         // Outer vec maps to tables. Inner vec maps to (array element count, columns).
         let mut sql_values: Vec<(Option<usize>, Vec<ToSqlOutput<'a>>)> = vec![(None, vec![])];
@@ -465,24 +431,16 @@ impl SqliteInner {
                 }
                 _ => unreachable!(),
             };
-            (if in_array {
-                <[_]>::last_mut
-            } else {
-                <[_]>::first_mut
-            })(&mut sql_values)
-            .unwrap()
-            .1
-            .push(sql_value);
+            push_sql_value(&mut sql_values, in_array, sql_value)
         };
         for value in fields {
             event_visitor::visit_value(value, &mut visitor)
         }
 
-        let block_number =
-            ToSqlOutput::Owned(SqlValue::Integer((*block_number).try_into().unwrap()));
-        let log_index = ToSqlOutput::Owned(SqlValue::Integer((*log_index).try_into().unwrap()));
+        let block_number = ToSqlOutput::Owned(SqlValue::Integer((*block_number).try_into()?));
+        let log_index = ToSqlOutput::Owned(SqlValue::Integer((*log_index).try_into()?));
         let transaction_index =
-            ToSqlOutput::Owned(SqlValue::Integer((*transaction_index).try_into().unwrap()));
+            ToSqlOutput::Owned(SqlValue::Integer((*transaction_index).try_into()?));
         let address = ToSqlOutput::Borrowed(SqlValueRef::Blob(&address.0));
         for (statement, (array_element_count, values)) in
             event.insert_statements.iter().zip(sql_values)
@@ -496,7 +454,7 @@ impl SqliteInner {
             for i in 0..array_element_count {
                 let row = &values[i * statement.fields..][..statement.fields];
                 let array_index = if is_array {
-                    Some(ToSqlOutput::Owned(SqlValue::Integer(i.try_into().unwrap())))
+                    Some(ToSqlOutput::Owned(SqlValue::Integer(i.try_into()?)))
                 } else {
                     None
                 };
@@ -514,7 +472,7 @@ impl SqliteInner {
     }
 
     fn store_block(&self, conn: &Transaction, block_time: &BlockTime) -> Result<()> {
-        let number = ToSqlOutput::Owned(SqlValue::Integer((block_time.number).try_into().unwrap()));
+        let number = ToSqlOutput::Owned(SqlValue::Integer(block_time.number.try_into()?));
         let time = ToSqlOutput::Owned(SqlValue::Text(systemtime_to_string(
             block_time.timestamp,
             None,
@@ -527,9 +485,8 @@ impl SqliteInner {
     }
 
     fn store_transaction(&self, conn: &Transaction, tx: &database::Transaction) -> Result<()> {
-        let block_number =
-            ToSqlOutput::Owned(SqlValue::Integer((tx.block_number).try_into().unwrap()));
-        let index = ToSqlOutput::Owned(SqlValue::Integer((tx.index).try_into().unwrap()));
+        let block_number = ToSqlOutput::Owned(SqlValue::Integer(tx.block_number.try_into()?));
+        let index = ToSqlOutput::Owned(SqlValue::Integer(tx.index.try_into()?));
         let hash = ToSqlOutput::Owned(SqlValue::Blob(tx.hash.to_vec()));
         let from = ToSqlOutput::Owned(SqlValue::Blob(tx.from.to_vec()));
         let to = ToSqlOutput::Owned(match tx.to {
@@ -548,8 +505,8 @@ impl SqliteInner {
         &self,
         con: &Transaction,
         blocks: &[database::EventBlock],
-        logs: &[database::Log],
-        block_times: &[database::BlockTime],
+        logs: &[Log],
+        block_times: &[BlockTime],
         transactions: &[database::Transaction],
     ) -> Result<()> {
         self.set_event_blocks(con, blocks)
@@ -694,7 +651,7 @@ mod tests {
                     address: Address([4; 20]),
                     fields,
                 }],
-                &[database::BlockTime {
+                &[BlockTime {
                     number: 1,
                     timestamp: SystemTime::UNIX_EPOCH,
                 }],
