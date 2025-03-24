@@ -1,3 +1,4 @@
+mod common;
 mod date_util;
 mod event_to_tables;
 mod event_visitor;
@@ -31,7 +32,7 @@ pub struct EventBlock<'a> {
     pub block: Block,
 }
 
-impl<'a> EventBlock<'a> {
+impl EventBlock<'_> {
     pub fn is_event(&self) -> bool {
         // TODO(bh2smith) - note that this implies blocks and transactions are "reserved" keywords
         //  So we should not allow events to have these names. OR this can be done differently.

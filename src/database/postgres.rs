@@ -1,3 +1,6 @@
+use crate::database::common::{
+    check_descriptor, event_exists_with_same_signature, push_sql_value, PreparedEvent,
+};
 use {
     crate::database::{
         self,
@@ -21,29 +24,12 @@ pub struct Postgres {
     ///
     /// The key is the `name` argument when the event was passed into
     /// `prepare_event`.
-    events: HashMap<String, PreparedEvent>,
+    events: HashMap<String, PreparedEvent<InsertStatement, tokio_postgres::Statement>>,
 
     get_event_block: tokio_postgres::Statement,
     set_event_block: tokio_postgres::Statement,
     set_indexed_block: tokio_postgres::Statement,
     new_event_block: tokio_postgres::Statement,
-}
-
-/// An event is represented in the database in several tables.
-///
-/// All tables have some columns that are unrelated to the event's fields. See
-/// `FIXED_COLUMNS`. The first table contains all fields that exist once per
-/// event which means they do not show up in arrays. The other tables contain
-/// fields that are part of arrays. Those tables additionally have the column
-/// `ARRAY_COLUMN`.
-///
-/// The order of tables and fields is given by the `event_visitor` module.
-struct PreparedEvent {
-    descriptor: EventDescriptor,
-    insert_statements: Vec<InsertStatement>,
-    /// Prepared statements for removing rows starting at some block number.
-    /// Every statement takes a block number as parameter.
-    remove_statements: Vec<tokio_postgres::Statement>,
 }
 
 async fn connect(params: &str) -> Result<tokio_postgres::Client> {
@@ -150,13 +136,7 @@ impl Database for Postgres {
             // - Maybe store serialized event descriptor in the database so we can load and
             //   check it.
 
-            if let Some(existing) = self.events.get(name) {
-                if event != &existing.descriptor {
-                    return Err(anyhow!(
-                        "event {} (database name {name}) already exists with different signature",
-                        event.name
-                    ));
-                }
+            if event_exists_with_same_signature(&self.events, name, event)? {
                 return Ok(());
             }
 
@@ -238,7 +218,7 @@ impl Database for Postgres {
     fn update<'a>(
         &'a mut self,
         blocks: &'a [database::EventBlock],
-        logs: &'a [database::Log],
+        logs: &'a [Log],
         block_times: &'a [database::BlockTime],
         transactions: &'a [database::Transaction],
     ) -> BoxFuture<'a, Result<()>> {
@@ -352,7 +332,7 @@ impl Database for Postgres {
 impl Postgres {
     async fn store_event<'a>(
         transaction: &mut tokio_postgres::Transaction<'a>,
-        events: &HashMap<String, PreparedEvent>,
+        events: &HashMap<String, PreparedEvent<InsertStatement, tokio_postgres::Statement>>,
         Log {
             event,
             block_number,
@@ -371,18 +351,14 @@ impl Postgres {
                 "event value has {len} fields but should have {expected_len}"
             ));
         }
-        for (i, (value, kind)) in fields.iter().zip(&event.descriptor.inputs).enumerate() {
-            if value.kind() != kind.field.kind {
-                return Err(anyhow!("event field {i} doesn't match event descriptor"));
-            }
-        }
+        check_descriptor(fields, event)?;
 
         // Outer vec maps to tables. Inner vec maps to (array element count, columns).
         type ToSqlBox = Box<dyn tokio_postgres::types::ToSql + Send + Sync>;
         let mut sql_values: Vec<(Option<usize>, Vec<ToSqlBox>)> = vec![(None, vec![])];
         let mut in_array: bool = false;
         let mut visitor = |value: VisitValue<'a>| {
-            let sql_value: Box<dyn tokio_postgres::types::ToSql + Send + Sync> = match value {
+            let sql_value: ToSqlBox = match value {
                 VisitValue::ArrayStart(len) => {
                     sql_values.push((Some(len), Vec::new()));
                     in_array = true;
@@ -415,22 +391,15 @@ impl Postgres {
                 VisitValue::Value(AbiValue::String(v)) => Box::new(v.replace('\0', "")),
                 _ => unreachable!(),
             };
-            (if in_array {
-                <[_]>::last_mut
-            } else {
-                <[_]>::first_mut
-            })(&mut sql_values)
-            .unwrap()
-            .1
-            .push(sql_value);
+            push_sql_value(&mut sql_values, in_array, sql_value)
         };
         for value in fields {
             event_visitor::visit_value(value, &mut visitor)
         }
 
-        let block_number = i64::try_from(*block_number).unwrap();
-        let log_index = i64::try_from(*log_index).unwrap();
-        let transaction_index = i64::try_from(*transaction_index).unwrap();
+        let block_number = i64::try_from(*block_number)?;
+        let log_index = i64::try_from(*log_index)?;
+        let transaction_index = i64::try_from(*transaction_index)?;
         let address = address.0.as_slice();
         for (statement, (array_element_count, values)) in
             event.insert_statements.iter().zip(sql_values)
@@ -441,7 +410,7 @@ impl Postgres {
             for i in 0..array_element_count {
                 let row = &values[i * statement.fields..][..statement.fields];
                 let array_index = if is_array {
-                    Some(i64::try_from(i).unwrap())
+                    Some(i64::try_from(i)?)
                 } else {
                     None
                 };
@@ -472,11 +441,12 @@ impl Postgres {
         Ok(())
     }
 
+    #[allow(clippy::needless_lifetimes)]
     async fn store_block<'a>(
         transaction: &mut tokio_postgres::Transaction<'a>,
         block: &database::BlockTime,
     ) -> Result<()> {
-        let block_number = i64::try_from(block.number).unwrap();
+        let block_number = i64::try_from(block.number)?;
         let params = [
             &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
             &block.timestamp,
@@ -488,12 +458,13 @@ impl Postgres {
         Ok(())
     }
 
+    #[allow(clippy::needless_lifetimes)]
     async fn store_transaction<'a>(
         transaction: &mut tokio_postgres::Transaction<'a>,
         tx: &database::Transaction,
     ) -> Result<()> {
-        let block_number = i64::try_from(tx.block_number).unwrap();
-        let index = i64::try_from(tx.index).unwrap();
+        let block_number = i64::try_from(tx.block_number)?;
+        let index = i64::try_from(tx.index)?;
 
         let params = [
             &block_number as &(dyn tokio_postgres::types::ToSql + Sync),
@@ -515,13 +486,13 @@ impl Postgres {
         table: &Table<'a>,
     ) -> Result<u64> {
         let mut sql = String::new();
-        write!(&mut sql, "CREATE TABLE IF NOT EXISTS {} (", table.name).unwrap();
-        write!(&mut sql, "{FIXED_COLUMNS}, ").unwrap();
+        write!(&mut sql, "CREATE TABLE IF NOT EXISTS {} (", table.name)?;
+        write!(&mut sql, "{FIXED_COLUMNS}, ")?;
         if is_array {
-            write!(&mut sql, "{ARRAY_COLUMN}, ").unwrap();
+            write!(&mut sql, "{ARRAY_COLUMN}, ")?;
         }
         for column in table.columns.iter() {
-            write!(&mut sql, "{}", column.name).unwrap();
+            write!(&mut sql, "{}", column.name)?;
             let type_ = match abi_kind_to_sql_type(column.kind).unwrap() {
                 tokio_postgres::types::Type::INT8 => "INT8",
                 tokio_postgres::types::Type::BYTEA => "BYTEA",
@@ -533,14 +504,14 @@ impl Postgres {
                     unreachable!()
                 }
             };
-            write!(&mut sql, " {type_} NOT NULL, ").unwrap();
+            write!(&mut sql, " {type_} NOT NULL, ")?;
         }
         let primary_key = if is_array {
             PRIMARY_KEY_ARRAY
         } else {
             PRIMARY_KEY
         };
-        write!(&mut sql, "PRIMARY KEY({primary_key}));").unwrap();
+        write!(&mut sql, "PRIMARY KEY({primary_key}));")?;
         tracing::debug!("creating table:\n{}", sql);
         transaction
             .execute(&sql, &[])
@@ -602,7 +573,7 @@ const SET_INDEXED_BLOCK: &str = "UPDATE _event_block SET indexed = $2 WHERE even
 /// - 2: log index
 /// - 3: array index if this is an array table (all tables after the first)
 /// - 3 + n: n-th event field/column
-struct InsertStatement {
+pub(crate) struct InsertStatement {
     sql: tokio_postgres::Statement,
     /// Number of event fields that map to SQL columns. Does not count
     /// FIXED_COLUMNS and array index.

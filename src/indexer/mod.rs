@@ -313,7 +313,7 @@ where
         let mut blocks = Vec::new();
         let mut min_index_block = u64::MAX;
         for adapter in self.adapters.iter() {
-            // Compute earliest block (as min of all event adapters)
+            // Compute the earliest block (as min of all event adapters)
             // to start indexing blocks and transactions
             let adapter_start = adapter.start();
             if adapter_start < min_index_block {
