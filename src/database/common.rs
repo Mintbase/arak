@@ -56,11 +56,7 @@ pub fn event_exists_with_same_signature<I, R>(
     Ok(false)
 }
 
-pub fn push_sql_value<T>(
-    sql_values: &mut [(Option<usize>, Vec<T>)],
-    in_array: bool,
-    sql_value: T,
-) {
+pub fn push_sql_value<T>(sql_values: &mut [(Option<usize>, Vec<T>)], in_array: bool, sql_value: T) {
     let target = if in_array {
         sql_values.last_mut()
     } else {
@@ -71,4 +67,3 @@ pub fn push_sql_value<T>(
         .1
         .push(sql_value);
 }
-

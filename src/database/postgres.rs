@@ -1,4 +1,6 @@
-use crate::database::common::{check_descriptor, event_exists_with_same_signature, push_sql_value, PreparedEvent};
+use crate::database::common::{
+    check_descriptor, event_exists_with_same_signature, push_sql_value, PreparedEvent,
+};
 use {
     crate::database::{
         self,
