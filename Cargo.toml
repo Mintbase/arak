@@ -11,7 +11,7 @@ clap = { version = "4", features = ["derive", "env"] }
 rusqlite = { version = "0.34.0", features = ["extra_check"] }
 # Waiting on https://github.com/nlordell/ethrpc-rs/pull/9
 #ethrpc = { version = "0.0.8", features = ["http"] }
-ethrpc = { git = "https://github.com/bh2smith/ethrpc-rs", rev = "4eb7466", features = [
+ethrpc = { git = "https://github.com/bh2smith/ethrpc-rs", rev = "f463da4", features = [
     "http",
 ] }
 serde = { version = "1", features = ["derive"] }

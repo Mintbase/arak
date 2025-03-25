@@ -418,7 +418,7 @@ dependencies = [
 [[package]]
 name = "ethrpc"
 version = "0.0.8"
-source = "git+https://github.com/bh2smith/ethrpc-rs?rev=4eb7466#4eb74661d48d01ef8224b853ef57f91cca69abdc"
+source = "git+https://github.com/bh2smith/ethrpc-rs?rev=f463da4#f463da4aee59c763a5ba0ac605b1441fdbbf1479"
 dependencies = [
  "arrayvec",
  "ethprim",

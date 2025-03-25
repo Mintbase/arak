@@ -51,6 +51,7 @@ pub struct Uncle<'a> {
 /// An emitted event log.
 #[derive(Debug, Default)]
 pub struct Log<'a> {
+    // pub transaction_hash: Digest,
     pub event: &'a str,
     pub block_number: u64,
     pub log_index: u64,

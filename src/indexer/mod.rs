@@ -14,9 +14,10 @@ use {
         eth,
         types::{Block, BlockSpec, BlockTag, BlockTransactions, Hydrated, LogBlocks},
     },
-    solabi::U256,
+    solabi::{Address, U256},
     std::{
         cmp,
+        str::FromStr,
         time::{Duration, SystemTime},
     },
     tokio::time,
@@ -130,6 +131,17 @@ where
             let to = cmp::min(finalized.number.as_u64(), earliest + config.page_size - 1);
             tracing::debug!(from =% earliest, %to, "indexing blocks");
 
+            // Add detailed logging for block ranges
+            tracing::debug!(
+                "page_size={}, finalized={}, earliest={}",
+                config.page_size,
+                finalized.number.as_u64(),
+                earliest
+            );
+
+            let to = cmp::min(finalized.number.as_u64(), earliest + config.page_size - 1);
+            tracing::debug!("block_range_size={}", to.saturating_sub(earliest) + 1);
+
             // Fetch Blocks and Transaction Data
             // TODO(bh2smith) - When a new event is introduced with start earlier than previously indexed events,
             //  we still need to pick up the block-data that we don't already have.
@@ -138,7 +150,7 @@ where
                 .map(|block: u64| {
                     (
                         eth::GetBlockByNumber,
-                        (BlockSpec::Number(U256::from(block)), Hydrated::Yes),
+                        (BlockSpec::Number(U256::from(block)), Hydrated::No),
                     )
                 })
                 .collect();
@@ -188,6 +200,41 @@ where
                 .flat_map(|(adapter, logs)| database_logs(adapter, logs))
                 .collect::<Vec<_>>();
 
+            // Filter logs by transaction sender
+            let filtered_logs = futures::future::join_all(logs.into_iter().map(|log| async {
+                let tx = self
+                    .eth
+                    .call(
+                        eth::GetTransactionByBlockNumberAndIndex,
+                        (
+                            BlockSpec::Number(U256::from(log.block_number)),
+                            U256::from(log.transaction_index),
+                        ),
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+
+                match tx {
+                    Some(tx)
+                        if tx.from()
+                            == Address::from_str("0x72469d86a92f5a9e975fe371a66015e667ab288f")
+                                .unwrap() =>
+                    {
+                        Some(log)
+                    }
+                    _ => None,
+                }
+            }))
+            .await;
+
+            let filtered_logs: Vec<_> = filtered_logs.into_iter().flatten().collect();
+            if !filtered_logs.is_empty() {
+                tracing::debug!(
+                    logs = %filtered_logs.len(),
+                    "keep relevant logs"
+                );
+            }
             // Add blocks and transactions.
             blocks.extend([
                 database::EventBlock {
@@ -207,7 +254,7 @@ where
             ]);
             let (block_times, transactions) = database_block_data(block_tx_data);
             self.database
-                .update(&blocks, &logs, &block_times, &transactions)
+                .update(&blocks, &filtered_logs, &block_times, &transactions)
                 .await?;
         }
     }
@@ -233,6 +280,7 @@ where
                     block = %next.number, hash = %next.hash,
                     "found new block"
                 );
+                time::sleep(Duration::from_secs(1)).await;
             }
             chain::Append::Reorg => {
                 let block = next.number - 1;
@@ -397,6 +445,7 @@ fn database_logs(
 
             Some(database::Log {
                 event: adapter.name(),
+                // transaction_hash: log.transaction_hash,
                 block_number: log.block_number.as_u64(),
                 log_index: log.log_index.as_u64(),
                 transaction_index: log.transaction_index.as_u64(),
