@@ -375,7 +375,7 @@ fn database_block_data(
 fn database_logs(
     adapter: &Adapter,
     logs: Vec<ethrpc::types::Log>,
-) -> impl Iterator<Item = database::Log> {
+) -> impl Iterator<Item = database::Log<'_>> {
     if !logs.is_empty() {
         tracing::debug!(
             event = %adapter.name(), logs = %logs.len(),
