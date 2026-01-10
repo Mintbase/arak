@@ -42,10 +42,20 @@ impl Chain {
 
     /// Updates the finalized block. Returns the previous finalized block.
     pub fn finalize(&mut self, finalized: U256) -> Result<U256> {
-        anyhow::ensure!(
-            (self.finalized..self.next()).contains(&finalized),
-            "invalid finalized block"
-        );
+        // If the finalized block is ahead of our chain, just return current finalized
+        if finalized >= self.next() {
+            return Ok(self.finalized);
+        }
+
+        // If the finalized block is behind our current finalized, log warning and return
+        if finalized < self.finalized {
+            tracing::warn!(
+                current = %self.finalized,
+                attempted = %finalized,
+                "attempted to finalize block before current finalized block"
+            );
+            return Ok(self.finalized);
+        }
 
         let keep = self.next() - finalized;
         let old = self.finalized;
